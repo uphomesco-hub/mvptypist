@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  min-height: 100vh;
+  margin: 0;
+  font-family: var(--font-body), ui-sans-serif, system-ui;
+  color: #332521;
+  background: radial-gradient(circle at top left, rgba(242, 115, 72, 0.18), transparent 45%),
+    radial-gradient(circle at 20% 20%, rgba(138, 162, 177, 0.35), transparent 50%),
+    #f8fafb;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  font-family: var(--font-display), ui-serif, Georgia;
+}
+
+.app-shell {
+  position: relative;
+  isolation: isolate;
+  min-height: 100vh;
+}
+
+.app-glow {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background-image: radial-gradient(circle at 70% 10%, rgba(221, 205, 192, 0.35), transparent 45%),
+    radial-gradient(circle at 10% 90%, rgba(112, 134, 150, 0.3), transparent 55%);
+}
+
+@layer components {
+  .card {
+    @apply rounded-3xl border border-mist-100 bg-white/80 p-6 shadow-card backdrop-blur;
+  }
+
+  .pill {
+    @apply inline-flex items-center gap-2 rounded-full border border-mist-200 bg-mist-50 px-3 py-1 text-xs font-medium text-mist-700;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-full px-4 py-2 text-sm font-semibold transition duration-200 disabled:cursor-not-allowed disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply bg-ink-900 text-mist-50 hover:bg-ink-800;
+  }
+
+  .btn-secondary {
+    @apply border border-mist-200 bg-white text-ink-800 hover:border-mist-300 hover:bg-mist-50;
+  }
+
+  .btn-accent {
+    @apply bg-accent-500 text-white hover:bg-accent-600;
+  }
+
+  .input {
+    @apply w-full rounded-2xl border border-mist-200 bg-white px-4 py-3 text-sm text-ink-900 shadow-sm focus:border-ink-400 focus:outline-none focus:ring-2 focus:ring-ink-200;
+  }
+}
