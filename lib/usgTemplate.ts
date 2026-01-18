@@ -49,7 +49,7 @@ const USG_LIMITATIONS_NOTE =
   "NON OBSTRUCTING URETERIC CALCULI MAY BE MISSED IN NON DILATED URETERS . SONOGRAPHY HAS ITS LIMITATIONS . IT CANNOT DETECT ALL ABNORMALITIES , SOME FINDINGS MAY BE MISSED DESPITE BEST EFFORTS OF DOCTOR . HENCE IN CASE OF ANY DISCREPANCY , KINDLY CONTACT THE UNDERSIGNED FOR REVIEW/ DISCUSSION";
 
 const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
-  liver_main: "Is normal in (___ cm). Tissue echotexture is homogenous.",
+  liver_main: "Is normal in size. Tissue echotexture is homogenous.",
   liver_focal_lesion: "No focal lesion seen.",
   liver_hepatic_veins: "Hepatic veins are not dilated.",
   liver_ihbr: "Intrahepatic biliary radicals are not dilated.",
@@ -60,7 +60,7 @@ const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
   cbd_main: "CBD is normal.",
   pancreas_main: "is normal in size, shape & contour.",
   pancreas_echotexture: "Tissue echotexture is homogenous.",
-  spleen_main: "is normal in (___ cm).",
+  spleen_main: "is normal in size, shape & echotexture.",
   spleen_focal_lesion: "No focal solid/ cystic lesion is seen.",
   kidneys_size: "",
   kidneys_main: "Both kidneys are normal in size, shape, position.",
@@ -76,7 +76,7 @@ const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
     "The prostate gland has homogeneous echotexture with intact capsule.",
   uterus_main: "Uterus is normal in size and shape.",
   uterus_myometrium: "Musculature shows normal echopattern.",
-  endometrium_measurement_mm: "___",
+  endometrium_measurement_mm: "",
   ovaries_main: "both ovaries appears normal",
   adnexal_mass: "no cyst / mass seen",
   peritoneal_fluid: "No free fluid seen in peritoneal cavity",
@@ -87,7 +87,7 @@ const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
 
 const USG_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_BASE,
-  kidneys_size: "Right Kidney    :  ___x___  mm      Left kidney   :   ___x___   mm",
+  kidneys_size: "",
   bladder_main: "partially filled",
   bladder_mass_calculus: "",
   ovaries_main: "",
@@ -96,10 +96,10 @@ const USG_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
 
 const USG_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_BASE,
-  liver_main: "Is normal in size ___ CM. Tissue echotexture is homogenous.",
+  liver_main: "Is normal in size. Tissue echotexture is homogenous.",
   gallbladder_calculus_sludge:
-    "There is evidence of multiple calculi or biliary sludge in visualized lumen of gall bladder largest mesuring ___ mm",
-  spleen_main: "is normal in size. shape & echotexture .",
+    "There is evidence of multiple calculi or biliary sludge in visualized lumen of gall bladder.",
+  spleen_main: "is normal in size, shape & echotexture.",
   kidneys_size: "",
   bladder_main: "walls are well defined & normal in thickness.",
   bladder_mass_calculus:
@@ -255,7 +255,7 @@ export function buildUsgReport(params: {
     );
     const endometriumLine = endometrium.trim()
       ? `Endometrial echoes are central (${endometrium} mm).`
-      : "";
+      : "Endometrial echoes are central.";
     const uterusLine = joinFragments([
       ensurePeriod(uterusMain),
       ensurePeriod(uterusMyometrium),

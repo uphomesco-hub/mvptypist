@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useEffect, useRef } from "react";
 
 type EditorProps = {
   value: string;
@@ -10,22 +10,72 @@ type EditorProps = {
   className?: string;
 };
 
-export default function Editor({
-  value,
-  onChange,
-  placeholder,
-  disabled = false,
-  className
-}: EditorProps) {
-  return (
-    <textarea
-      className={`input min-h-[240px] resize-y text-base leading-relaxed ${
-        className || ""
-      }`}
-      placeholder={placeholder}
-      value={value}
-      onChange={(event) => onChange(event.target.value)}
-      disabled={disabled}
-    />
-  );
+function htmlToText(html: string) {
+  return html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/div>\s*<div>/gi, "\n")
+    .replace(/<\/p>\s*<p>/gi, "\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/g, " ")
+    .trim();
 }
+
+function assignRef<T>(
+  ref: React.ForwardedRef<T>,
+  value: T | null
+) {
+  if (typeof ref === "function") {
+    ref(value);
+  } else if (ref) {
+    ref.current = value;
+  }
+}
+
+const Editor = React.forwardRef<HTMLDivElement, EditorProps>(function Editor(
+  { value, onChange, placeholder, disabled = false, className },
+  ref
+) {
+  const innerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!innerRef.current) return;
+    if (innerRef.current.innerHTML !== value) {
+      innerRef.current.innerHTML = value;
+    }
+  }, [value]);
+
+  const isEmpty = !htmlToText(value);
+
+  const handleInput = () => {
+    if (!innerRef.current) return;
+    onChange(innerRef.current.innerHTML);
+  };
+
+  return (
+    <div className="relative">
+      {placeholder && isEmpty && (
+        <div className="pointer-events-none absolute left-4 top-3 text-sm text-mist-500">
+          {placeholder}
+        </div>
+      )}
+      <div
+        ref={(node) => {
+          innerRef.current = node;
+          assignRef(ref, node);
+        }}
+        className={`input min-h-[240px] resize-y whitespace-pre-wrap text-base leading-relaxed ${
+          disabled ? "cursor-not-allowed opacity-60" : ""
+        } ${className || ""}`}
+        contentEditable={!disabled}
+        suppressContentEditableWarning
+        role="textbox"
+        aria-multiline="true"
+        aria-disabled={disabled}
+        onInput={handleInput}
+        onBlur={handleInput}
+      />
+    </div>
+  );
+});
+
+export default Editor;

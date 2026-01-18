@@ -13,6 +13,79 @@ const IS_GITHUB_PAGES = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
 const API_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/generate`
   : "/api/generate";
+const REPORT_HEADINGS = [
+  "Liver:",
+  "Gall bladder:",
+  "Pancreas:",
+  "Spleen:",
+  "Kidneys:",
+  "Urinary Bladder:",
+  "Prostate:",
+  "Uterus:",
+  "Adenexa:",
+  "Adnexa:"
+];
+const IMPRESSION_PATTERN = /^(impression:|significant findings\s*:)/i;
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatReportHtml(text: string) {
+  return text
+    .split(/\r?\n/)
+    .map((line) => {
+      if (!line) return "";
+      const trimmed = line.trim();
+      if (IMPRESSION_PATTERN.test(trimmed)) {
+        return `<strong><u>${escapeHtml(line)}</u></strong>`;
+      }
+      const heading = REPORT_HEADINGS.find((label) =>
+        trimmed.toLowerCase().startsWith(label.toLowerCase())
+      );
+      if (!heading) {
+        return escapeHtml(line);
+      }
+      const lineLower = line.toLowerCase();
+      const headingLower = heading.toLowerCase();
+      const headingIndex = lineLower.indexOf(headingLower);
+      if (headingIndex === -1) {
+        return escapeHtml(line);
+      }
+      const beforeHeading = line.slice(0, headingIndex);
+      const headingText = line.slice(headingIndex, headingIndex + heading.length);
+      const afterHeading = line.slice(headingIndex + heading.length);
+      return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
+        headingText
+      )}</strong>${escapeHtml(afterHeading)}`;
+    })
+    .join("<br>");
+}
+
+function htmlToPlainText(html: string) {
+  if (!html) return "";
+  const withBreaks = html
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\/div>\s*<div>/gi, "\n")
+    .replace(/<\/p>\s*<p>/gi, "\n")
+    .replace(/<\/li>\s*<li>/gi, "\n")
+    .replace(/<\/(div|p|li)>/gi, "\n")
+    .replace(/<[^>]+>/g, "");
+  return withBreaks
+    .replace(/&nbsp;/g, " ")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 MB";
@@ -59,6 +132,14 @@ export default function Home() {
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<number | null>(null);
   const audioUrlRef = useRef<string | null>(null);
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const fullscreenEditorRef = useRef<HTMLDivElement | null>(null);
+
+  const observationsPlain = useMemo(
+    () => htmlToPlainText(observations),
+    [observations]
+  );
+  const hasObservations = Boolean(observationsPlain.trim());
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === templateId),
@@ -233,7 +314,7 @@ export default function Home() {
       }
 
       const observationsText = String(payload.observations || "");
-      setObservations(observationsText);
+      setObservations(formatReportHtml(observationsText));
       setFlags(Array.isArray(payload.flags) ? payload.flags : []);
       setDisclaimer(String(payload.disclaimer || ""));
       setRawJson(JSON.stringify(payload, null, 2));
@@ -245,11 +326,31 @@ export default function Home() {
   };
 
   const handleCopy = async () => {
+    const text = observationsPlain.trim();
+    if (!text) {
+      setError("Nothing to copy yet.");
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(observations);
+      await navigator.clipboard.writeText(text);
     } catch {
       setError("Unable to copy. Please copy manually.");
     }
+  };
+
+  const applyInlineFormat = (mode: "bold" | "underline" | "boldUnderline") => {
+    const activeEditor = isFullscreen
+      ? fullscreenEditorRef.current
+      : editorRef.current;
+    if (!activeEditor) return;
+    activeEditor.focus();
+    if (mode === "bold" || mode === "boldUnderline") {
+      document.execCommand("bold");
+    }
+    if (mode === "underline" || mode === "boldUnderline") {
+      document.execCommand("underline");
+    }
+    setObservations(activeEditor.innerHTML);
   };
 
   const handleCopyJson = async () => {
@@ -413,7 +514,7 @@ export default function Home() {
             <button
               className="btn btn-secondary"
               onClick={() => setIsFullscreen(true)}
-              disabled={!observations}
+              disabled={!hasObservations}
             >
               Fullscreen
             </button>
@@ -425,23 +526,33 @@ export default function Home() {
           onChange={setObservations}
           placeholder="Generated report will appear here."
           disabled={isGenerating}
+          ref={editorRef}
         />
 
         <div className="flex flex-wrap gap-3">
+          <button
+            className="btn btn-secondary"
+            onClick={() => applyInlineFormat("boldUnderline")}
+            disabled={!hasObservations}
+          >
+            Mark abnormal
+          </button>
           <button className="btn btn-secondary" onClick={handleCopy}>
             Copy Full Text
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => exportDocx("radiology-report.docx", observations)}
-            disabled={!observations}
+            onClick={() =>
+              exportDocx("radiology-report.docx", observationsPlain)
+            }
+            disabled={!hasObservations}
           >
             Download .docx
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => exportPdf("radiology-report.pdf", observations)}
-            disabled={!observations}
+            onClick={() => exportPdf("radiology-report.pdf", observationsPlain)}
+            disabled={!hasObservations}
           >
             Download PDF
           </button>
@@ -496,24 +607,34 @@ export default function Home() {
                   placeholder="Generated report will appear here."
                   disabled={isGenerating}
                   className="h-full min-h-0 resize-none"
+                  ref={fullscreenEditorRef}
                 />
               </div>
 
               <div className="flex flex-wrap gap-3">
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => applyInlineFormat("boldUnderline")}
+                  disabled={!hasObservations}
+                >
+                  Mark abnormal
+                </button>
                 <button className="btn btn-secondary" onClick={handleCopy}>
                   Copy Full Text
                 </button>
                 <button
                   className="btn btn-secondary"
-                  onClick={() => exportDocx("radiology-report.docx", observations)}
-                  disabled={!observations}
+                  onClick={() =>
+                    exportDocx("radiology-report.docx", observationsPlain)
+                  }
+                  disabled={!hasObservations}
                 >
                   Download .docx
                 </button>
                 <button
                   className="btn btn-secondary"
-                  onClick={() => exportPdf("radiology-report.pdf", observations)}
-                  disabled={!observations}
+                  onClick={() => exportPdf("radiology-report.pdf", observationsPlain)}
+                  disabled={!hasObservations}
                 >
                   Download PDF
                 </button>
