@@ -1,11 +1,28 @@
 "use client";
 
-import { Document, Packer, Paragraph, TextRun } from "docx";
+import { Document, Packer, Paragraph, TextRun, UnderlineType } from "docx";
+import { htmlToLines } from "@/lib/richText";
 
-export async function exportDocx(fileName: string, text: string) {
-  const lines = text.split(/\r?\n/);
+export async function exportDocx(fileName: string, html: string) {
+  const lines = htmlToLines(html || "");
   const paragraphs = lines.length
-    ? lines.map((line) => new Paragraph({ children: [new TextRun(line)] }))
+    ? lines.map((lineSegments) => {
+        if (!lineSegments.length) {
+          return new Paragraph("");
+        }
+        return new Paragraph({
+          children: lineSegments.map(
+            (segment) =>
+              new TextRun({
+                text: segment.text,
+                bold: segment.bold,
+                underline: segment.underline
+                  ? { type: UnderlineType.SINGLE }
+                  : undefined
+              })
+          )
+        });
+      })
     : [new Paragraph("")];
 
   const doc = new Document({

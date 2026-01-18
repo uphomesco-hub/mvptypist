@@ -5,6 +5,10 @@ import Editor from "@/components/Editor";
 import { templates } from "@/lib/templates";
 import { exportDocx } from "@/lib/exportDocx";
 import { exportPdf } from "@/lib/exportPdf";
+import {
+  USG_ABDOMEN_FEMALE_TEMPLATE,
+  USG_ABDOMEN_MALE_TEMPLATE
+} from "@/lib/usgTemplate";
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
 const MAX_AUDIO_SECONDS = 5 * 60;
@@ -26,6 +30,12 @@ const REPORT_HEADINGS = [
   "Adnexa:"
 ];
 const IMPRESSION_PATTERN = /^(impression:|significant findings\s*:)/i;
+const SKIP_LINE_PATTERNS = [
+  /^name:/i,
+  /^sonography\b/i,
+  /^-{6,}/,
+  /^non obstructing/i
+];
 
 function escapeHtml(value: string) {
   return value
@@ -36,7 +46,72 @@ function escapeHtml(value: string) {
     .replace(/'/g, "&#39;");
 }
 
-function formatReportHtml(text: string) {
+function getDefaultTemplateText(templateId: string) {
+  if (templateId === "USG_ABDOMEN_FEMALE") return USG_ABDOMEN_FEMALE_TEMPLATE;
+  if (templateId === "USG_ABDOMEN_MALE") return USG_ABDOMEN_MALE_TEMPLATE;
+  return "";
+}
+
+function normalizeLine(text: string) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function buildDefaultLineSet(templateId: string) {
+  const template = getDefaultTemplateText(templateId);
+  if (!template) return new Set<string>();
+  const lines = template.split(/\r?\n/);
+  const normalized = lines.map((line) => normalizeLine(line)).filter(Boolean);
+  return new Set(normalized);
+}
+
+function startsWithHeading(trimmedLine: string) {
+  return REPORT_HEADINGS.find((label) =>
+    trimmedLine.toLowerCase().startsWith(label.toLowerCase())
+  );
+}
+
+function formatHeadingLine(params: {
+  line: string;
+  heading: string | null;
+  highlight: boolean;
+}) {
+  const { line, heading, highlight } = params;
+  if (!heading) {
+    return highlight
+      ? `<strong><u>${escapeHtml(line)}</u></strong>`
+      : escapeHtml(line);
+  }
+  const lineLower = line.toLowerCase();
+  const headingLower = heading.toLowerCase();
+  const headingIndex = lineLower.indexOf(headingLower);
+  if (headingIndex === -1) {
+    return highlight
+      ? `<strong><u>${escapeHtml(line)}</u></strong>`
+      : escapeHtml(line);
+  }
+  const beforeHeading = line.slice(0, headingIndex);
+  const headingText = line.slice(headingIndex, headingIndex + heading.length);
+  const afterHeading = line.slice(headingIndex + heading.length);
+  if (!highlight) {
+    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
+      headingText
+    )}</strong>${escapeHtml(afterHeading)}`;
+  }
+  const highlightedBody = afterHeading.trim()
+    ? `<strong><u>${escapeHtml(afterHeading)}</u></strong>`
+    : "";
+  return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
+    headingText
+  )}</strong>${highlightedBody}`;
+}
+
+function isSkippableLine(trimmedLine: string) {
+  return SKIP_LINE_PATTERNS.some((pattern) => pattern.test(trimmedLine));
+}
+
+function formatReportHtml(text: string, templateId: string) {
+  const defaultLines = buildDefaultLineSet(templateId);
+  const hasDefaults = defaultLines.size > 0;
   return text
     .split(/\r?\n/)
     .map((line) => {
@@ -45,24 +120,23 @@ function formatReportHtml(text: string) {
       if (IMPRESSION_PATTERN.test(trimmed)) {
         return `<strong><u>${escapeHtml(line)}</u></strong>`;
       }
-      const heading = REPORT_HEADINGS.find((label) =>
-        trimmed.toLowerCase().startsWith(label.toLowerCase())
-      );
-      if (!heading) {
-        return escapeHtml(line);
+      const normalized = normalizeLine(line);
+      const heading = startsWithHeading(trimmed);
+      let isNormal = defaultLines.has(normalized) || isSkippableLine(trimmed);
+      if (!isNormal && !heading) {
+        for (const label of REPORT_HEADINGS) {
+          const normalizedWithHeading = normalizeLine(`${label} ${line}`);
+          if (defaultLines.has(normalizedWithHeading)) {
+            isNormal = true;
+            break;
+          }
+        }
       }
-      const lineLower = line.toLowerCase();
-      const headingLower = heading.toLowerCase();
-      const headingIndex = lineLower.indexOf(headingLower);
-      if (headingIndex === -1) {
-        return escapeHtml(line);
-      }
-      const beforeHeading = line.slice(0, headingIndex);
-      const headingText = line.slice(headingIndex, headingIndex + heading.length);
-      const afterHeading = line.slice(headingIndex + heading.length);
-      return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
-        headingText
-      )}</strong>${escapeHtml(afterHeading)}`;
+      return formatHeadingLine({
+        line,
+        heading: heading || null,
+        highlight: hasDefaults && !isNormal
+      });
     })
     .join("<br>");
 }
@@ -314,7 +388,7 @@ export default function Home() {
       }
 
       const observationsText = String(payload.observations || "");
-      setObservations(formatReportHtml(observationsText));
+      setObservations(formatReportHtml(observationsText, templateId));
       setFlags(Array.isArray(payload.flags) ? payload.flags : []);
       setDisclaimer(String(payload.disclaimer || ""));
       setRawJson(JSON.stringify(payload, null, 2));
@@ -338,17 +412,20 @@ export default function Home() {
     }
   };
 
-  const applyInlineFormat = (mode: "bold" | "underline" | "boldUnderline") => {
+  const toggleAbnormalFormatting = () => {
     const activeEditor = isFullscreen
       ? fullscreenEditorRef.current
       : editorRef.current;
     if (!activeEditor) return;
     activeEditor.focus();
-    if (mode === "bold" || mode === "boldUnderline") {
-      document.execCommand("bold");
-    }
-    if (mode === "underline" || mode === "boldUnderline") {
+    const isBold = document.queryCommandState("bold");
+    const isUnderline = document.queryCommandState("underline");
+    if (isBold && isUnderline) {
       document.execCommand("underline");
+      document.execCommand("bold");
+    } else {
+      if (!isBold) document.execCommand("bold");
+      if (!isUnderline) document.execCommand("underline");
     }
     setObservations(activeEditor.innerHTML);
   };
@@ -532,7 +609,7 @@ export default function Home() {
         <div className="flex flex-wrap gap-3">
           <button
             className="btn btn-secondary"
-            onClick={() => applyInlineFormat("boldUnderline")}
+            onClick={toggleAbnormalFormatting}
             disabled={!hasObservations}
           >
             Mark abnormal
@@ -542,16 +619,14 @@ export default function Home() {
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() =>
-              exportDocx("radiology-report.docx", observationsPlain)
-            }
+            onClick={() => exportDocx("radiology-report.docx", observations)}
             disabled={!hasObservations}
           >
             Download .docx
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => exportPdf("radiology-report.pdf", observationsPlain)}
+            onClick={() => exportPdf("radiology-report.pdf", observations)}
             disabled={!hasObservations}
           >
             Download PDF
@@ -614,7 +689,7 @@ export default function Home() {
               <div className="flex flex-wrap gap-3">
                 <button
                   className="btn btn-secondary"
-                  onClick={() => applyInlineFormat("boldUnderline")}
+                  onClick={toggleAbnormalFormatting}
                   disabled={!hasObservations}
                 >
                   Mark abnormal
@@ -624,16 +699,14 @@ export default function Home() {
                 </button>
                 <button
                   className="btn btn-secondary"
-                  onClick={() =>
-                    exportDocx("radiology-report.docx", observationsPlain)
-                  }
+                  onClick={() => exportDocx("radiology-report.docx", observations)}
                   disabled={!hasObservations}
                 >
                   Download .docx
                 </button>
                 <button
                   className="btn btn-secondary"
-                  onClick={() => exportPdf("radiology-report.pdf", observationsPlain)}
+                  onClick={() => exportPdf("radiology-report.pdf", observations)}
                   disabled={!hasObservations}
                 >
                   Download PDF
