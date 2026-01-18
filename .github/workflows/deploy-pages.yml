@@ -1,0 +1,54 @@
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+      - run: npm ci
+      - name: Configure build env
+        run: |
+          echo "GITHUB_PAGES=true" >> $GITHUB_ENV
+          echo "NEXT_PUBLIC_GITHUB_PAGES=true" >> $GITHUB_ENV
+          if [[ "${{ github.event.repository.name }}" == *.github.io ]]; then
+            echo "NEXT_PUBLIC_BASE_PATH=" >> $GITHUB_ENV
+          else
+            echo "NEXT_PUBLIC_BASE_PATH=/${{ github.event.repository.name }}" >> $GITHUB_ENV
+          fi
+          if [[ -n "${{ vars.NEXT_PUBLIC_API_BASE_URL }}" ]]; then
+            echo "NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}" >> $GITHUB_ENV
+          fi
+      - name: Remove API routes for static export
+        run: rm -rf app/api
+      - run: npm run build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: out
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

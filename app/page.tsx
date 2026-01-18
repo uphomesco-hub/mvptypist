@@ -8,6 +8,11 @@ import { exportPdf } from "@/lib/exportPdf";
 
 const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
 const MAX_AUDIO_SECONDS = 5 * 60;
+const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || "").trim();
+const IS_GITHUB_PAGES = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
+const API_ENDPOINT = API_BASE_URL
+  ? `${API_BASE_URL.replace(/\/$/, "")}/api/generate`
+  : "/api/generate";
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 MB";
@@ -48,6 +53,7 @@ export default function Home() {
   const [disclaimer, setDisclaimer] = useState("");
   const [rawJson, setRawJson] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
+  const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -144,6 +150,10 @@ export default function Home() {
           type: recorder.mimeType || "audio/webm"
         });
         stream.getTracks().forEach((track) => track.stop());
+        if (!blob.size) {
+          setError("No audio captured. Please try recording again.");
+          return;
+        }
         const file = new File([blob], `dictation-${Date.now()}.webm`, {
           type: blob.type || "audio/webm"
         });
@@ -192,6 +202,12 @@ export default function Home() {
 
   const handleGenerate = async () => {
     if (!audioFile || !templateId) return;
+    if (!isBackendConfigured) {
+      setError(
+        "Generation is disabled on this static site. Configure NEXT_PUBLIC_API_BASE_URL to point at a deployed API."
+      );
+      return;
+    }
 
     setIsGenerating(true);
     setError(null);
@@ -201,7 +217,7 @@ export default function Home() {
       formData.append("template_id", templateId);
       formData.append("audio_file", audioFile);
 
-      const response = await fetch("/api/generate", {
+      const response = await fetch(API_ENDPOINT, {
         method: "POST",
         body: formData
       });
@@ -210,9 +226,6 @@ export default function Home() {
 
       if (payload?.debug?.rawText) {
         console.info("[Gemini raw]", payload.debug.rawText);
-      }
-      if (payload?.debug?.blockReplacements?.length) {
-        console.info("[Gemini block replacements]", payload.debug.blockReplacements);
       }
 
       if (!response.ok) {
@@ -250,12 +263,12 @@ export default function Home() {
   return (
     <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10 md:px-10">
       <header className="flex flex-col gap-3">
-        <span className="pill">Findings draft only</span>
+        <span className="pill">Report draft only</span>
         <h1 className="text-4xl font-semibold text-ink-900 md:text-5xl">
-          Radiology AI Typist (MVP)
+          Radiology Typist (MVP)
         </h1>
         <p className="max-w-2xl text-sm text-mist-700 md:text-base">
-          Record one continuous dictation, generate a findings-only draft, and edit
+          Record one continuous dictation, generate a full report draft, and edit
           the output before sharing with the patient file.
         </p>
       </header>
@@ -264,7 +277,7 @@ export default function Home() {
         <div>
           <h2 className="text-lg font-semibold text-ink-900">1) Select Template</h2>
           <p className="text-sm text-mist-600">
-            Choose the radiology template to scope the findings.
+            Choose the radiology template to scope the report.
           </p>
         </div>
         <select
@@ -292,7 +305,7 @@ export default function Home() {
           <h2 className="text-lg font-semibold text-ink-900">2) Record or Upload</h2>
           <p className="text-sm text-mist-600">
             Record a single continuous dictation (max 5 minutes / 12MB) or upload
-            an audio file.
+            an audio file. Start with patient name and gender when possible.
           </p>
         </div>
 
@@ -349,19 +362,37 @@ export default function Home() {
             </div>
           </div>
         )}
+
+        <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4 text-sm text-mist-700">
+          <p className="font-medium text-ink-800">Recording notes</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">
+            <li>Limit remains 5 minutes or 12MB to keep processing stable.</li>
+            <li>If you misspeak or there is noise, reset and re-record.</li>
+            <li>Long pauses are kept; try to keep dictation continuous.</li>
+          </ul>
+        </div>
       </section>
 
       <section className="card flex items-center justify-between gap-4">
         <div>
-          <h2 className="text-lg font-semibold text-ink-900">3) Generate Draft</h2>
+          <h2 className="text-lg font-semibold text-ink-900">3) Generate Report</h2>
           <p className="text-sm text-mist-600">
-            Generates findings-only JSON from Gemini.
+            Generates a full report draft from Gemini.
           </p>
+          {!isBackendConfigured && (
+            <p className="mt-2 text-xs text-accent-600">
+              Backend not configured for this static site. Set
+              {" "}
+              <span className="font-semibold">NEXT_PUBLIC_API_BASE_URL</span>
+              {" "}
+              to enable generation.
+            </p>
+          )}
         </div>
         <button
           className="btn btn-primary min-w-[180px]"
           onClick={handleGenerate}
-          disabled={!templateId || !audioFile || isGenerating}
+          disabled={!templateId || !audioFile || isGenerating || !isBackendConfigured}
         >
           {isGenerating ? "Generating..." : "Generate"}
         </button>
@@ -371,10 +402,10 @@ export default function Home() {
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-ink-900">
-              OBSERVATIONS / FINDINGS (Editable)
+              REPORT (Editable)
             </h2>
             <p className="text-sm text-mist-600">
-              Edit the generated findings before saving or exporting.
+              Edit the generated report before saving or exporting.
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -392,7 +423,7 @@ export default function Home() {
         <Editor
           value={observations}
           onChange={setObservations}
-          placeholder="Generated observations will appear here."
+          placeholder="Generated report will appear here."
           disabled={isGenerating}
         />
 
@@ -402,14 +433,14 @@ export default function Home() {
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => exportDocx("radiology-findings.docx", observations)}
+            onClick={() => exportDocx("radiology-report.docx", observations)}
             disabled={!observations}
           >
             Download .docx
           </button>
           <button
             className="btn btn-secondary"
-            onClick={() => exportPdf("radiology-findings.pdf", observations)}
+            onClick={() => exportPdf("radiology-report.pdf", observations)}
             disabled={!observations}
           >
             Download PDF
@@ -438,71 +469,76 @@ export default function Home() {
       </section>
 
       {isFullscreen && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-ink-900/50 p-4 md:p-10">
-          <div className="card mx-auto flex max-w-5xl flex-col gap-4 bg-white">
-            <div className="flex flex-wrap items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-ink-900">
-                  OBSERVATIONS / FINDINGS (Fullscreen)
-                </h2>
-                <p className="text-sm text-mist-600">
-                  Edit and review the full report comfortably.
-                </p>
-              </div>
-              <button
-                className="btn btn-secondary"
-                onClick={() => setIsFullscreen(false)}
-              >
-                Exit fullscreen
-              </button>
-            </div>
-
-            <Editor
-              value={observations}
-              onChange={setObservations}
-              placeholder="Generated observations will appear here."
-              disabled={isGenerating}
-            />
-
-            <div className="flex flex-wrap gap-3">
-              <button className="btn btn-secondary" onClick={handleCopy}>
-                Copy Full Text
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => exportDocx("radiology-findings.docx", observations)}
-                disabled={!observations}
-              >
-                Download .docx
-              </button>
-              <button
-                className="btn btn-secondary"
-                onClick={() => exportPdf("radiology-findings.pdf", observations)}
-                disabled={!observations}
-              >
-                Download PDF
-              </button>
-              {rawJson && (
-                <button className="btn btn-secondary" onClick={handleCopyJson}>
-                  Copy Full JSON
+        <div className="fixed inset-0 z-50 bg-ink-900/50">
+          <div className="flex h-[100dvh] flex-col p-0 sm:p-4 md:p-8">
+            <div className="card mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden bg-white">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-ink-900">
+                    REPORT (Fullscreen)
+                  </h2>
+                  <p className="text-sm text-mist-600">
+                    Edit and review the full report comfortably.
+                  </p>
+                </div>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => setIsFullscreen(false)}
+                >
+                  Exit fullscreen
                 </button>
-              )}
-            </div>
+              </div>
 
-            <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4">
-              <p className="text-sm font-semibold text-ink-900">Flags</p>
-              {flags.length ? (
-                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-mist-700">
-                  {flags.map((flag) => (
-                    <li key={flag}>{flag}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="mt-2 text-sm text-mist-600">No flags yet.</p>
-              )}
-            </div>
+              <div className="flex-1 min-h-0">
+                <Editor
+                  value={observations}
+                  onChange={setObservations}
+                  placeholder="Generated report will appear here."
+                  disabled={isGenerating}
+                  className="h-full min-h-0 resize-none"
+                />
+              </div>
 
-            <p className="text-xs text-mist-600">{disclaimer || "Draft only."}</p>
+              <div className="flex flex-wrap gap-3">
+                <button className="btn btn-secondary" onClick={handleCopy}>
+                  Copy Full Text
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => exportDocx("radiology-report.docx", observations)}
+                  disabled={!observations}
+                >
+                  Download .docx
+                </button>
+                <button
+                  className="btn btn-secondary"
+                  onClick={() => exportPdf("radiology-report.pdf", observations)}
+                  disabled={!observations}
+                >
+                  Download PDF
+                </button>
+                {rawJson && (
+                  <button className="btn btn-secondary" onClick={handleCopyJson}>
+                    Copy Full JSON
+                  </button>
+                )}
+              </div>
+
+              <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4">
+                <p className="text-sm font-semibold text-ink-900">Flags</p>
+                {flags.length ? (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-mist-700">
+                    {flags.map((flag) => (
+                      <li key={flag}>{flag}</li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 text-sm text-mist-600">No flags yet.</p>
+                )}
+              </div>
+
+              <p className="text-xs text-mist-600">{disclaimer || "Draft only."}</p>
+            </div>
           </div>
         </div>
       )}

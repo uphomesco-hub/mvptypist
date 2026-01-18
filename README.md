@@ -37,6 +37,14 @@ Open `http://localhost:3000`.
 3) Add the `GEMINI_API_KEY` environment variable.
 4) Deploy.
 
+## Deployment (GitHub Pages)
+1) Push this repo to GitHub.
+2) In **Settings → Pages**, set Source to **GitHub Actions**.
+3) (Optional) Add a repo variable `NEXT_PUBLIC_API_BASE_URL` pointing to a deployed API.
+4) Wait for the **Deploy GitHub Pages** action to finish.
+
+Your site will be available at `https://<user>.github.io/<repo>/`.
+
 ### Custom Domain
 1) In Vercel project settings, open **Domains**.
 2) Add your domain and follow DNS instructions.
@@ -46,4 +54,4 @@ Open `http://localhost:3000`.
 - Audio limits: 5 minutes or 12MB.
 - Gemini is instructed to return JSON only with observations, flags, and disclaimer.
 - Debugging: set `DEBUG_GEMINI_LOG=true` to log raw Gemini output on the server; set `DEBUG_GEMINI_CLIENT=true` to include the raw model output in API error responses.
-- GitHub Pages: not supported for the Gemini-backed app (requires a server route + secret API key). Use Vercel/Netlify/Render, or host the API separately and keep Pages as UI-only.
+- GitHub Pages: the workflow removes `app/api` for a static export. Generation is disabled unless you point the UI at a separate API host via `NEXT_PUBLIC_API_BASE_URL`.

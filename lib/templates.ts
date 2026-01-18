@@ -92,20 +92,65 @@ export const templates: Template[] = [
     headings: ["Alignment", "Bones", "Joint Spaces", "Soft Tissues"]
   },
   {
-    id: "USG_ABDOMEN",
-    title: "USG Abdomen",
+    id: "USG_ABDOMEN_MALE",
+    title: "USG Whole Abdomen (Male)",
     allowedTopics: [
       "Liver",
-      "Gallbladder",
-      "Biliary tree",
+      "Gall bladder",
+      "CBD",
       "Pancreas",
       "Spleen",
       "Kidneys",
       "Urinary bladder",
-      "Aorta",
-      "Ascites"
+      "Prostate",
+      "Peritoneal cavity",
+      "Lymph nodes",
+      "Impression",
+      "Correlation"
     ],
-    headings: ["Hepatobiliary", "Pancreas", "Spleen", "Renal", "Other"]
+    headings: [
+      "Liver",
+      "Gall bladder",
+      "Pancreas",
+      "Spleen",
+      "Kidneys",
+      "Urinary Bladder",
+      "Prostate",
+      "Peritoneal cavity",
+      "Lymph nodes",
+      "Impression"
+    ]
+  },
+  {
+    id: "USG_ABDOMEN_FEMALE",
+    title: "USG Whole Abdomen (Female)",
+    allowedTopics: [
+      "Liver",
+      "Gall bladder",
+      "CBD",
+      "Pancreas",
+      "Spleen",
+      "Kidneys",
+      "Urinary bladder",
+      "Uterus",
+      "Adenexa",
+      "Peritoneal cavity",
+      "Lymph nodes",
+      "Impression"
+    ],
+    headings: [
+      "Liver",
+      "Gall bladder",
+      "Pancreas",
+      "Spleen",
+      "Kidneys",
+      "Urinary Bladder",
+      "Uterus",
+      "Adenexa",
+      "Peritoneal cavity",
+      "Lymph nodes",
+      "Impression"
+    ]
   },
   {
     id: "DOPPLER_LOWER_LIMB",
