@@ -10,8 +10,15 @@ import {
   USG_ABDOMEN_MALE_TEMPLATE
 } from "@/lib/usgTemplate";
 
-const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
-const MAX_AUDIO_SECONDS = 5 * 60;
+const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
+const MAX_INLINE_AUDIO_BYTES = 100 * 1024 * 1024;
+const TARGET_AUDIO_BITRATE = 96_000;
+const PREFERRED_MIME_TYPES = [
+  "audio/webm;codecs=opus",
+  "audio/webm",
+  "audio/ogg;codecs=opus",
+  "audio/ogg"
+];
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL || "").trim();
 const IS_GITHUB_PAGES = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
 const API_ENDPOINT = API_BASE_URL
@@ -30,19 +37,24 @@ const REPORT_HEADINGS = [
   "Adnexa:"
 ];
 const IMPRESSION_PATTERN = /^(impression:|significant findings\s*:)/i;
-const SKIP_LINE_PATTERNS = [
-  /^name:/i,
-  /^sonography\b/i,
-  /^-{6,}/,
-  /^non obstructing/i
-];
+const SKIP_LINE_PATTERNS = [/^name:/i, /^sonography\b/i, /^-{6,}/, /^non obstructing/i];
+
+const estimateBase64Size = (bytes: number) => Math.ceil(bytes / 3) * 4;
+
+const pickSupportedMimeType = () => {
+  if (typeof MediaRecorder === "undefined") return null;
+  for (const mimeType of PREFERRED_MIME_TYPES) {
+    if (MediaRecorder.isTypeSupported(mimeType)) return mimeType;
+  }
+  return null;
+};
 
 function escapeHtml(value: string) {
   return value
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
+    .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
 }
 
@@ -59,9 +71,7 @@ function normalizeLine(text: string) {
 function buildDefaultLineSet(templateId: string) {
   const template = getDefaultTemplateText(templateId);
   if (!template) return new Set<string>();
-  const lines = template.split(/\r?\n/);
-  const normalized = lines.map((line) => normalizeLine(line)).filter(Boolean);
-  return new Set(normalized);
+  return new Set(template.split(/\r?\n/).map(normalizeLine).filter(Boolean));
 }
 
 function startsWithHeading(trimmedLine: string) {
@@ -93,16 +103,12 @@ function formatHeadingLine(params: {
   const headingText = line.slice(headingIndex, headingIndex + heading.length);
   const afterHeading = line.slice(headingIndex + heading.length);
   if (!highlight) {
-    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
-      headingText
-    )}</strong>${escapeHtml(afterHeading)}`;
+    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong>${escapeHtml(afterHeading)}`;
   }
   const highlightedBody = afterHeading.trim()
     ? `<strong><u>${escapeHtml(afterHeading)}</u></strong>`
     : "";
-  return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(
-    headingText
-  )}</strong>${highlightedBody}`;
+  return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong>${highlightedBody}`;
 }
 
 function isSkippableLine(trimmedLine: string) {
@@ -163,8 +169,7 @@ function htmlToPlainText(html: string) {
 
 function formatBytes(bytes: number) {
   if (!bytes) return "0 MB";
-  const mb = bytes / (1024 * 1024);
-  return `${mb.toFixed(2)} MB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function formatDuration(totalSeconds: number | null) {
@@ -179,9 +184,7 @@ async function getAudioDuration(url: string) {
     const audio = new Audio();
     audio.src = url;
     audio.preload = "metadata";
-    audio.onloadedmetadata = () => {
-      resolve(audio.duration || 0);
-    };
+    audio.onloadedmetadata = () => resolve(audio.duration || 0);
     audio.onerror = () => reject(new Error("Unable to load audio metadata"));
   });
 }
@@ -200,31 +203,27 @@ export default function Home() {
   const [disclaimer, setDisclaimer] = useState("");
   const [rawJson, setRawJson] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
+  const [activeView, setActiveView] = useState<"dashboard" | "recording" | "report">("dashboard");
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
+  const recordedBytesRef = useRef(0);
   const timerRef = useRef<number | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const fullscreenEditorRef = useRef<HTMLDivElement | null>(null);
 
-  const observationsPlain = useMemo(
-    () => htmlToPlainText(observations),
-    [observations]
-  );
-  const hasObservations = Boolean(observationsPlain.trim());
-
+  const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === templateId),
     [templateId]
   );
+  const observationsPlain = useMemo(() => htmlToPlainText(observations), [observations]);
+  const hasObservations = Boolean(observationsPlain.trim());
 
   useEffect(() => {
     return () => {
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-      }
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     };
   }, []);
 
@@ -236,12 +235,8 @@ export default function Home() {
   }, [isFullscreen]);
 
   const resetAudio = () => {
-    if (isRecording) {
-      stopRecording();
-    }
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current);
-    }
+    if (isRecording) stopRecording();
+    if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = null;
     setAudioUrl(null);
     setAudioFile(null);
@@ -252,21 +247,17 @@ export default function Home() {
 
   const applyAudioFile = async (file: File) => {
     if (file.size > MAX_AUDIO_BYTES) {
-      setError("Audio exceeds 12MB. Please upload a smaller file.");
+      setError("Audio exceeds 100MB. Please upload a smaller file.");
       return;
     }
-
+    if (estimateBase64Size(file.size) > MAX_INLINE_AUDIO_BYTES) {
+      setError("Audio is too large for inline upload after base64 encoding (100MB limit).");
+      return;
+    }
     const url = URL.createObjectURL(file);
     try {
       const duration = await getAudioDuration(url);
-      if (duration > MAX_AUDIO_SECONDS) {
-        URL.revokeObjectURL(url);
-        setError("Audio exceeds 5 minutes. Please shorten the dictation.");
-        return;
-      }
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current);
-      }
+      if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       audioUrlRef.current = url;
       setAudioUrl(url);
       setAudioFile(file);
@@ -281,7 +272,6 @@ export default function Home() {
   const startRecording = async () => {
     if (isRecording) return;
     setError(null);
-
     if (!navigator.mediaDevices?.getUserMedia) {
       setError("Audio recording is not supported in this browser.");
       return;
@@ -289,21 +279,38 @@ export default function Home() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const recorder = new MediaRecorder(stream);
+      const mimeType = pickSupportedMimeType();
+      const options: MediaRecorderOptions = { audioBitsPerSecond: TARGET_AUDIO_BITRATE };
+      if (mimeType) options.mimeType = mimeType;
+
+      let recorder: MediaRecorder;
+      try {
+        recorder = new MediaRecorder(stream, options);
+      } catch {
+        recorder = new MediaRecorder(stream);
+      }
+
       recorderRef.current = recorder;
       chunksRef.current = [];
+      recordedBytesRef.current = 0;
       setElapsedSeconds(0);
 
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunksRef.current.push(event.data);
+          recordedBytesRef.current += event.data.size;
+          if (
+            recordedBytesRef.current > MAX_AUDIO_BYTES ||
+            estimateBase64Size(recordedBytesRef.current) > MAX_INLINE_AUDIO_BYTES
+          ) {
+            setError("Recording reached the 100MB inline limit. Please stop and upload a smaller file.");
+            stopRecording();
+          }
         }
       };
 
       recorder.onstop = async () => {
-        const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm"
-        });
+        const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" });
         stream.getTracks().forEach((track) => track.stop());
         if (!blob.size) {
           setError("No audio captured. Please try recording again.");
@@ -315,21 +322,13 @@ export default function Home() {
         await applyAudioFile(file);
       };
 
-      recorder.start();
+      recorder.start(1000);
       setIsRecording(true);
       const startTime = Date.now();
-
-      if (timerRef.current) {
-        window.clearInterval(timerRef.current);
-      }
-
+      if (timerRef.current) window.clearInterval(timerRef.current);
       timerRef.current = window.setInterval(() => {
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         setElapsedSeconds(elapsed);
-        if (elapsed >= MAX_AUDIO_SECONDS) {
-          setError("Max recording length is 5 minutes.");
-          stopRecording();
-        }
       }, 1000);
     } catch (recordError) {
       setError((recordError as Error).message);
@@ -337,11 +336,12 @@ export default function Home() {
   };
 
   const stopRecording = () => {
-    if (!isRecording) return;
     const recorder = recorderRef.current;
-    if (recorder && recorder.state !== "inactive") {
-      recorder.stop();
+    if (!recorder || recorder.state === "inactive") {
+      setIsRecording(false);
+      return;
     }
+    recorder.stop();
     setIsRecording(false);
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
@@ -358,9 +358,7 @@ export default function Home() {
   const handleGenerate = async () => {
     if (!audioFile || !templateId) return;
     if (!isBackendConfigured) {
-      setError(
-        "Generation is disabled on this static site. Configure NEXT_PUBLIC_API_BASE_URL to point at a deployed API."
-      );
+      setError("Generation is disabled on this static site. Configure NEXT_PUBLIC_API_BASE_URL.");
       return;
     }
 
@@ -372,26 +370,17 @@ export default function Home() {
       formData.append("template_id", templateId);
       formData.append("audio_file", audioFile);
 
-      const response = await fetch(API_ENDPOINT, {
-        method: "POST",
-        body: formData
-      });
-
+      const response = await fetch(API_ENDPOINT, { method: "POST", body: formData });
       const payload = await response.json();
 
-      if (payload?.debug?.rawText) {
-        console.info("[Gemini raw]", payload.debug.rawText);
-      }
-
-      if (!response.ok) {
-        throw new Error(payload?.error || "Generation failed.");
-      }
+      if (!response.ok) throw new Error(payload?.error || "Generation failed.");
 
       const observationsText = String(payload.observations || "");
       setObservations(formatReportHtml(observationsText, templateId));
       setFlags(Array.isArray(payload.flags) ? payload.flags : []);
       setDisclaimer(String(payload.disclaimer || ""));
       setRawJson(JSON.stringify(payload, null, 2));
+      setActiveView("report");
     } catch (generateError) {
       setError((generateError as Error).message);
     } finally {
@@ -412,10 +401,17 @@ export default function Home() {
     }
   };
 
+  const handleCopyJson = async () => {
+    if (!rawJson) return;
+    try {
+      await navigator.clipboard.writeText(rawJson);
+    } catch {
+      setError("Unable to copy JSON. Please copy manually.");
+    }
+  };
+
   const toggleAbnormalFormatting = () => {
-    const activeEditor = isFullscreen
-      ? fullscreenEditorRef.current
-      : editorRef.current;
+    const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
     if (!activeEditor) return;
     activeEditor.focus();
     const isBold = document.queryCommandState("bold");
@@ -430,322 +426,220 @@ export default function Home() {
     setObservations(activeEditor.innerHTML);
   };
 
-  const handleCopyJson = async () => {
-    try {
-      await navigator.clipboard.writeText(rawJson);
-    } catch {
-      setError("Unable to copy JSON. Please copy manually.");
-    }
-  };
+  const canGoRecording = Boolean(templateId);
+  const canGoReport = Boolean(audioFile);
 
   return (
-    <main className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-10 md:px-10">
-      <header className="flex flex-col gap-3">
-        <span className="pill">Report draft only</span>
-        <h1 className="text-4xl font-semibold text-ink-900 md:text-5xl">
-          Radiology Typist (MVP)
-        </h1>
-        <p className="max-w-2xl text-sm text-mist-700 md:text-base">
-          Record one continuous dictation, generate a full report draft, and edit
-          the output before sharing with the patient file.
-        </p>
-      </header>
-
-      <section className="card flex flex-col gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-ink-900">1) Select Template</h2>
-          <p className="text-sm text-mist-600">
-            Choose the radiology template to scope the report.
-          </p>
+    <main className="rad-shell">
+      <aside className="rad-sidebar">
+        <div className="rad-brand">
+          <div className="rad-brand-icon">📊</div>
+          <span>RadFlow AI</span>
         </div>
-        <select
-          className="input"
-          value={templateId}
-          onChange={(event) => setTemplateId(event.target.value)}
-        >
-          <option value="">Select a template</option>
-          {templates.map((template) => (
-            <option key={template.id} value={template.id}>
-              {template.title}
-            </option>
-          ))}
-        </select>
-        {selectedTemplate && (
-          <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4 text-sm text-mist-700">
-            <p className="font-medium text-ink-800">Allowed topics</p>
-            <p>{selectedTemplate.allowedTopics.join(", ")}</p>
-          </div>
-        )}
-      </section>
-
-      <section className="card flex flex-col gap-5">
-        <div>
-          <h2 className="text-lg font-semibold text-ink-900">2) Record or Upload</h2>
-          <p className="text-sm text-mist-600">
-            Record a single continuous dictation (max 5 minutes / 12MB) or upload
-            an audio file. Start with patient name and gender when possible.
-          </p>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-3">
-          <button
-            className="btn btn-accent"
-            onClick={startRecording}
-            disabled={isRecording}
-          >
-            Start recording
+        <nav className="rad-nav">
+          <button className={`rad-nav-item ${activeView === "dashboard" ? "active" : ""}`} onClick={() => setActiveView("dashboard")}>
+            Dashboard
           </button>
-          <button
-            className="btn btn-secondary"
-            onClick={stopRecording}
-            disabled={!isRecording}
-          >
-            Stop
+          <button className={`rad-nav-item ${activeView === "recording" ? "active" : ""}`} onClick={() => setActiveView("recording")} disabled={!canGoRecording}>
+            Recording
           </button>
-          <button className="btn btn-secondary" onClick={resetAudio}>
-            Reset
+          <button className={`rad-nav-item ${activeView === "report" ? "active" : ""}`} onClick={() => setActiveView("report")} disabled={!canGoReport}>
+            Report Editor
           </button>
-          <label className="btn btn-secondary cursor-pointer">
-            Upload audio
-            <input
-              type="file"
-              accept="audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/webm"
-              className="hidden"
-              onChange={handleUpload}
-            />
-          </label>
-          <span className="text-xs text-mist-600">
-            Recording time: {formatDuration(elapsedSeconds)}
-          </span>
-        </div>
+        </nav>
+      </aside>
 
-        {audioUrl && (
-          <div className="grid gap-3 md:grid-cols-[2fr,1fr]">
-            <div className="rounded-2xl border border-mist-200 bg-white p-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-mist-500">
-                Playback
-              </p>
-              <audio className="mt-3 w-full" controls src={audioUrl} />
+      <section className="rad-main">
+        {activeView === "dashboard" && (
+          <>
+            <header className="rad-header">
+              <div className="rad-search">Search Patient ID, Name, or Accession #</div>
+              <div className="rad-ready">AI Voice Ready</div>
+            </header>
+
+            <section className="rad-hero card">
+              <div>
+                <h1>Welcome back</h1>
+                <p>Select a template to start a new report workflow.</p>
+              </div>
+              <button className="btn btn-primary" disabled={!canGoRecording} onClick={() => setActiveView("recording")}>
+                Start New Report
+              </button>
+            </section>
+
+            <div className="rad-stats">
+              <div className="card"><p>Completed Today</p><h3>24</h3></div>
+              <div className="card"><p>Avg. Turnaround</p><h3>18m</h3></div>
+              <div className="card"><p>Pending Sign-off</p><h3 className="warn">8</h3></div>
+              <div className="card"><p>AI Accuracy</p><h3>98.2%</h3></div>
             </div>
-            <div className="rounded-2xl border border-mist-200 bg-white p-4 text-sm text-mist-700">
-              <p>
-                File size: <span className="font-semibold">{formatBytes(audioFile?.size || 0)}</span>
-              </p>
-              <p>
-                Duration: <span className="font-semibold">{formatDuration(audioDuration)}</span>
-              </p>
-              <p>
-                Format: <span className="font-semibold">{audioFile?.type || "audio"}</span>
-              </p>
-            </div>
-          </div>
-        )}
 
-        <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4 text-sm text-mist-700">
-          <p className="font-medium text-ink-800">Recording notes</p>
-          <ul className="mt-2 list-disc space-y-1 pl-5">
-            <li>Limit remains 5 minutes or 12MB to keep processing stable.</li>
-            <li>If you misspeak or there is noise, reset and re-record.</li>
-            <li>Long pauses are kept; try to keep dictation continuous.</li>
-          </ul>
-        </div>
-      </section>
-
-      <section className="card flex items-center justify-between gap-4">
-        <div>
-          <h2 className="text-lg font-semibold text-ink-900">3) Generate Report</h2>
-          <p className="text-sm text-mist-600">
-            Generates a full report draft from Gemini.
-          </p>
-          {!isBackendConfigured && (
-            <p className="mt-2 text-xs text-accent-600">
-              Backend not configured for this static site. Set
-              {" "}
-              <span className="font-semibold">NEXT_PUBLIC_API_BASE_URL</span>
-              {" "}
-              to enable generation.
-            </p>
-          )}
-        </div>
-        <button
-          className="btn btn-primary min-w-[180px]"
-          onClick={handleGenerate}
-          disabled={!templateId || !audioFile || isGenerating || !isBackendConfigured}
-        >
-          {isGenerating ? "Generating..." : "Generate"}
-        </button>
-      </section>
-
-      <section className="card flex flex-col gap-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 className="text-lg font-semibold text-ink-900">
-              REPORT (Editable)
-            </h2>
-            <p className="text-sm text-mist-600">
-              Edit the generated report before saving or exporting.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="pill">Editable</span>
-            <button
-              className="btn btn-secondary"
-              onClick={() => setIsFullscreen(true)}
-              disabled={!hasObservations}
-            >
-              Fullscreen
-            </button>
-          </div>
-        </div>
-
-        <Editor
-          value={observations}
-          onChange={setObservations}
-          placeholder="Generated report will appear here."
-          disabled={isGenerating}
-          ref={editorRef}
-        />
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            className="btn btn-secondary"
-            onClick={toggleAbnormalFormatting}
-            disabled={!hasObservations}
-          >
-            Mark abnormal
-          </button>
-          <button className="btn btn-secondary" onClick={handleCopy}>
-            Copy Full Text
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => exportDocx("radiology-report.docx", observations)}
-            disabled={!hasObservations}
-          >
-            Download .docx
-          </button>
-          <button
-            className="btn btn-secondary"
-            onClick={() => exportPdf("radiology-report.pdf", observations)}
-            disabled={!hasObservations}
-          >
-            Download PDF
-          </button>
-          {rawJson && (
-            <button className="btn btn-secondary" onClick={handleCopyJson}>
-              Copy Full JSON
-            </button>
-          )}
-        </div>
-
-        <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4">
-          <p className="text-sm font-semibold text-ink-900">Flags</p>
-          {flags.length ? (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-mist-700">
-              {flags.map((flag) => (
-                <li key={flag}>{flag}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-sm text-mist-600">No flags yet.</p>
-          )}
-        </div>
-
-        <p className="text-xs text-mist-600">{disclaimer || "Draft only."}</p>
-      </section>
-
-      {isFullscreen && (
-        <div className="fixed inset-0 z-50 bg-ink-900/50">
-          <div className="flex h-[100dvh] flex-col p-0 sm:p-4 md:p-8">
-            <div className="card mx-auto flex h-full w-full max-w-5xl flex-col gap-4 overflow-hidden bg-white">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-ink-900">
-                    REPORT (Fullscreen)
-                  </h2>
-                  <p className="text-sm text-mist-600">
-                    Edit and review the full report comfortably.
-                  </p>
+            <section className="card rad-templates">
+              <div className="rad-templates-head">
+                <h2>Quick Templates</h2>
+              </div>
+              <select className="input" value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                <option value="">Select a template</option>
+                {templates.map((template) => (
+                  <option key={template.id} value={template.id}>{template.title}</option>
+                ))}
+              </select>
+              {selectedTemplate && (
+                <div className="rad-allowed">
+                  <p>Allowed topics</p>
+                  <span>{selectedTemplate.allowedTopics.join(", ")}</span>
                 </div>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => setIsFullscreen(false)}
-                >
-                  Exit fullscreen
-                </button>
+              )}
+            </section>
+          </>
+        )}
+
+        {activeView === "recording" && (
+          <section className="record-shell">
+            <div className="record-main">
+              <div className="record-top">
+                <div className="record-status">{isRecording ? "Recording Live" : "Ready"}</div>
+                <h2>Dictating Report Findings</h2>
+                <p>AI is processing your speech in real-time...</p>
               </div>
 
-              <div className="flex-1 min-h-0">
+              <div className="record-wave">
+                {Array.from({ length: 16 }).map((_, i) => (
+                  <div key={i} className="bar" style={{ height: `${36 + ((i * 31) % 130)}px` }} />
+                ))}
+              </div>
+
+              <div className="record-time">{formatDuration(elapsedSeconds)}</div>
+
+              {audioUrl && (
+                <div className="card">
+                  <audio controls src={audioUrl} className="w-full" />
+                  <p className="meta">{formatBytes(audioFile?.size || 0)} · {formatDuration(audioDuration)} · {audioFile?.type || "audio"}</p>
+                </div>
+              )}
+
+              <div className="record-controls">
+                <button className="btn btn-secondary" onClick={startRecording} disabled={isRecording}>Start</button>
+                <button className="btn btn-primary" onClick={stopRecording} disabled={!isRecording}>Stop</button>
+                <label className="btn btn-secondary">
+                  Upload
+                  <input type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/webm" className="hidden" onChange={handleUpload} />
+                </label>
+                <button className="btn btn-secondary" onClick={resetAudio}>Reset</button>
+                <button className="btn btn-primary" onClick={() => setActiveView("report")} disabled={!canGoReport}>Continue</button>
+              </div>
+            </div>
+
+            <aside className="record-side card">
+              <div className="side-head">
+                <h3>Report Template</h3>
+                <span>4/7 COMPLETED</span>
+              </div>
+              <ul>
+                <li>✅ Lungs & Pleura</li>
+                <li>✅ Cardiac Silhouette</li>
+                <li>◻️ Impression</li>
+              </ul>
+              <p className="tip">Mention “Impression” followed by your conclusion to auto-populate final section.</p>
+              <button className="btn btn-secondary" onClick={() => setActiveView("dashboard")}>Back to dashboard</button>
+            </aside>
+          </section>
+        )}
+
+        {activeView === "report" && (
+          <>
+            <section className="patient-bar card">
+              <div><p>Patient</p><h4>Johnathan Doe</h4></div>
+              <div><p>ID / DOB</p><h4>#PX-9921 • 12 May 1984</h4></div>
+              <div><p>Template</p><h4>{selectedTemplate?.title || "Not selected"}</h4></div>
+              <span className="autosave">Auto-saved</span>
+            </section>
+
+            <section className="report-grid">
+              <div className="card report-editor-card">
+                <div className="report-audio-bar">
+                  <div>
+                    <h3>Add Audio Clarification</h3>
+                    <p>Record or upload additional dictation before regeneration.</p>
+                  </div>
+                  <div className="actions">
+                    <button className="btn btn-secondary" onClick={startRecording} disabled={isRecording}>Rec</button>
+                    <button className="btn btn-secondary" onClick={stopRecording} disabled={!isRecording}>Stop</button>
+                    <label className="btn btn-secondary">Upload<input type="file" accept="audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/webm" className="hidden" onChange={handleUpload} /></label>
+                    <button className="btn btn-secondary" onClick={resetAudio}>Reset</button>
+                  </div>
+                </div>
+
+                <div className="report-toolbar">
+                  <div className="left">
+                    <button className="tool" onClick={toggleAbnormalFormatting} disabled={!hasObservations}>B/U</button>
+                    <button className="tool" onClick={handleCopy}>Copy</button>
+                    {rawJson && <button className="tool" onClick={handleCopyJson}>JSON</button>}
+                    <button className="tool" onClick={() => exportDocx("radiology-report.docx", observations)} disabled={!hasObservations}>DOCX</button>
+                    <button className="tool" onClick={() => exportPdf("radiology-report.pdf", observations)} disabled={!hasObservations}>PDF</button>
+                    <button className="tool" onClick={() => setIsFullscreen(true)} disabled={!hasObservations}>Fullscreen</button>
+                  </div>
+                  <button className="btn btn-primary" onClick={handleGenerate} disabled={!templateId || !audioFile || isGenerating || !isBackendConfigured}>
+                    {isGenerating ? "Generating..." : "Generate"}
+                  </button>
+                </div>
+
                 <Editor
                   value={observations}
                   onChange={setObservations}
                   placeholder="Generated report will appear here."
                   disabled={isGenerating}
-                  className="h-full min-h-0 resize-none"
-                  ref={fullscreenEditorRef}
+                  ref={editorRef}
+                  className="report-editor"
                 />
+
+                <div className="flags card">
+                  <p>Flags</p>
+                  {flags.length ? (
+                    <ul>{flags.map((flag) => <li key={flag}>{flag}</li>)}</ul>
+                  ) : (
+                    <span>No flags yet.</span>
+                  )}
+                </div>
+
+                <div className="report-footer-actions">
+                  <button className="btn btn-secondary" onClick={() => setActiveView("recording")}>Back</button>
+                  <button className="btn btn-primary" onClick={() => setActiveView("dashboard")}>Finish</button>
+                </div>
               </div>
 
-              <div className="flex flex-wrap gap-3">
-                <button
-                  className="btn btn-secondary"
-                  onClick={toggleAbnormalFormatting}
-                  disabled={!hasObservations}
-                >
-                  Mark abnormal
-                </button>
-                <button className="btn btn-secondary" onClick={handleCopy}>
-                  Copy Full Text
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => exportDocx("radiology-report.docx", observations)}
-                  disabled={!hasObservations}
-                >
-                  Download .docx
-                </button>
-                <button
-                  className="btn btn-secondary"
-                  onClick={() => exportPdf("radiology-report.pdf", observations)}
-                  disabled={!hasObservations}
-                >
-                  Download PDF
-                </button>
-                {rawJson && (
-                  <button className="btn btn-secondary" onClick={handleCopyJson}>
-                    Copy Full JSON
-                  </button>
-                )}
-              </div>
+              <aside className="card insights">
+                <div className="head"><h3>Smart Insights</h3><span>LIVE</span></div>
+                <div className="insight">Dictation quality looks good. Keep findings grouped by organ/region.</div>
+                <div className="insight warn">Review generated abnormalities before export/sign-off.</div>
+                <div className="insight">Use “Impression” at the end for final summary bullets.</div>
+                <p className="disclaimer">{disclaimer || "Draft only. Data not stored."}</p>
+              </aside>
+            </section>
+          </>
+        )}
 
-              <div className="rounded-2xl border border-mist-200 bg-mist-50 p-4">
-                <p className="text-sm font-semibold text-ink-900">Flags</p>
-                {flags.length ? (
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-mist-700">
-                    {flags.map((flag) => (
-                      <li key={flag}>{flag}</li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="mt-2 text-sm text-mist-600">No flags yet.</p>
-                )}
-              </div>
+        {error && <section className="error-box">{error}</section>}
 
-              <p className="text-xs text-mist-600">{disclaimer || "Draft only."}</p>
+        {isFullscreen && (
+          <div className="fullscreen-wrap">
+            <div className="fullscreen-card card">
+              <div className="fullscreen-head">
+                <h3>REPORT (Fullscreen)</h3>
+                <button className="btn btn-secondary" onClick={() => setIsFullscreen(false)}>Exit</button>
+              </div>
+              <Editor
+                value={observations}
+                onChange={setObservations}
+                placeholder="Generated report will appear here."
+                disabled={isGenerating}
+                ref={fullscreenEditorRef}
+                className="report-editor full"
+              />
             </div>
           </div>
-        </div>
-      )}
-
-      {error && (
-        <section className="rounded-2xl border border-accent-500/30 bg-white p-4 text-sm text-accent-600">
-          {error}
-        </section>
-      )}
-
-      <footer className="text-center text-xs text-mist-600">
-        Data not stored. Draft only.
-      </footer>
+        )}
+      </section>
     </main>
   );
 }
