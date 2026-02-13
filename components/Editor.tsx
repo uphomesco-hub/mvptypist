@@ -63,7 +63,7 @@ const Editor = React.forwardRef<HTMLDivElement, EditorProps>(function Editor(
           innerRef.current = node;
           assignRef(ref, node);
         }}
-        className={`input min-h-[240px] resize-y whitespace-pre-wrap text-base leading-relaxed ${
+        className={`w-full min-h-[240px] resize-y whitespace-pre-wrap border border-slate-200 bg-white px-6 py-5 text-base leading-relaxed focus:outline-none focus:ring-2 focus:ring-primary/20 ${
           disabled ? "cursor-not-allowed opacity-60" : ""
         } ${className || ""}`}
         contentEditable={!disabled}

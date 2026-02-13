@@ -51,7 +51,7 @@ Your site will be available at `https://<user>.github.io/<repo>/`.
 
 ## Notes
 - No database or auth; audio is processed in-memory only.
-- Audio limits: 5 minutes or 12MB.
+- Audio limits: inline uploads capped at 100MB (about 75MB raw audio after base64).
 - Gemini is instructed to return JSON only with observations, flags, and disclaimer.
 - Debugging: set `DEBUG_GEMINI_LOG=true` to log raw Gemini output on the server; set `DEBUG_GEMINI_CLIENT=true` to include the raw model output in API error responses.
 - GitHub Pages: the workflow removes `app/api` for a static export. Generation is disabled unless you point the UI at a separate API host via `NEXT_PUBLIC_API_BASE_URL`.

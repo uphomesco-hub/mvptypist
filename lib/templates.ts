@@ -153,6 +153,22 @@ export const templates: Template[] = [
     ]
   },
   {
+    id: "USG_ABDOMEN_CUSTOM",
+    title: "USG Whole Abdomen (Custom)",
+    allowedTopics: [
+      "Custom heading mapping",
+      "Deterministic section fill",
+      "Liver / Gall bladder / CBD / Pancreas / Spleen",
+      "Kidneys / Bladder / Prostate / Uterus / Adnexa",
+      "Peritoneum / Lymph nodes / Impression / Note"
+    ],
+    headings: [
+      "Custom Template Text",
+      "Heading Mapping",
+      "Deterministic Section Fill"
+    ]
+  },
+  {
     id: "DOPPLER_LOWER_LIMB",
     title: "Doppler Lower Limb",
     allowedTopics: [

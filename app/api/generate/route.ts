@@ -10,13 +10,19 @@ import {
   type UsgFieldOverrides,
   type UsgGender
 } from "@/lib/usgTemplate";
+import {
+  CUSTOM_TEMPLATE_ID,
+  renderCustomTemplateDeterministically,
+  sanitizeCustomTemplateMapping
+} from "@/lib/usgCustomTemplate";
 
 const MODEL_NAME = "gemini-2.5-flash";
 const DEBUG_GEMINI_LOG = process.env.DEBUG_GEMINI_LOG === "true";
 const DEBUG_GEMINI_CLIENT = process.env.DEBUG_GEMINI_CLIENT === "true";
 const DEFAULT_DISCLAIMER =
   "Draft only. Must be reviewed and signed by the doctor.";
-const MAX_AUDIO_BYTES = 12 * 1024 * 1024;
+const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
+const MAX_INLINE_AUDIO_BYTES = 100 * 1024 * 1024;
 const FORBIDDEN_HEADERS = [
   "impression",
   "conclusion",
@@ -27,8 +33,6 @@ const FORBIDDEN_HEADERS = [
 ];
 
 export const runtime = "nodejs";
-
-let GEMINI_SUPPORTS_RESPONSE_MIME_TYPE: boolean | null = null;
 
 function getClientIp(request: NextRequest) {
   const forwardedFor = request.headers.get("x-forwarded-for");
@@ -59,6 +63,10 @@ function sanitizeObservations(text: string, forbiddenHeaders: string[]) {
     text: cleaned.join("\n").trim(),
     removed
   };
+}
+
+function estimateBase64Size(bytes: number) {
+  return Math.ceil(bytes / 3) * 4;
 }
 
 function extractJson(text: string) {
@@ -268,6 +276,26 @@ function extractFlagsField(rawText: string) {
   }
 }
 
+function extractStringArrayField(rawText: string, field: string) {
+  const match = rawText.match(
+    new RegExp(`"${field}"\\s*:\\s*(\\[[\\s\\S]*?\\])`)
+  );
+  if (!match) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (!Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed
+      .map((value) => (typeof value === "string" ? value.trim() : ""))
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+}
+
 function fallbackParse(rawText: string) {
   const template_id = extractStringField(rawText, "template_id");
   const observations = extractStringField(rawText, "observations");
@@ -277,6 +305,10 @@ function fallbackParse(rawText: string) {
   const exam_date = extractStringField(rawText, "exam_date");
   const conclusion = extractStringField(rawText, "conclusion");
   const flags = extractFlagsField(rawText);
+  const other_observations = extractStringArrayField(
+    rawText,
+    "other_observations"
+  );
   const fields: Record<string, string> = {};
   for (const key of USG_FIELD_KEYS) {
     const value = extractStringField(rawText, key as string);
@@ -294,6 +326,7 @@ function fallbackParse(rawText: string) {
     !exam_date &&
     !conclusion &&
     !flags &&
+    !other_observations?.length &&
     Object.keys(fields).length === 0
   ) {
     return null;
@@ -308,6 +341,7 @@ function fallbackParse(rawText: string) {
     exam_date,
     conclusion,
     flags,
+    other_observations,
     fields: Object.keys(fields).length ? fields : undefined
   };
 }
@@ -321,6 +355,10 @@ function fallbackParseLenient(rawText: string) {
   const exam_date = extractStringFieldLenient(rawText, "exam_date");
   const conclusion = extractStringFieldLenient(rawText, "conclusion");
   const flags = extractFlagsField(rawText);
+  const other_observations = extractStringArrayField(
+    rawText,
+    "other_observations"
+  );
   const fields: Record<string, string> = {};
   for (const key of USG_FIELD_KEYS) {
     const value = extractStringFieldLenient(rawText, key as string);
@@ -338,6 +376,7 @@ function fallbackParseLenient(rawText: string) {
     !exam_date &&
     !conclusion &&
     !flags &&
+    !other_observations?.length &&
     Object.keys(fields).length === 0
   ) {
     return null;
@@ -352,6 +391,7 @@ function fallbackParseLenient(rawText: string) {
     exam_date,
     conclusion,
     flags,
+    other_observations,
     fields: Object.keys(fields).length ? fields : undefined
   };
 }
@@ -510,6 +550,133 @@ function hasAllUsgFieldKeys(fields: unknown) {
   );
 }
 
+function normalizeOtherObservationLine(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+const USG_ABDOMEN_OTHER_OBS_KEYWORDS = [
+  "abdomen",
+  "abdominal",
+  "liver",
+  "hepatic",
+  "portal vein",
+  "ihbr",
+  "gall",
+  "gallbladder",
+  "gall bladder",
+  "cbd",
+  "bile duct",
+  "pancreas",
+  "pancreatic",
+  "spleen",
+  "splenic",
+  "kidney",
+  "kidneys",
+  "renal",
+  "ureter",
+  "ureteric",
+  "bladder",
+  "urinary bladder",
+  "prostate",
+  "uterus",
+  "endometrium",
+  "ovary",
+  "ovaries",
+  "adnexa",
+  "adnexal",
+  "pelvic",
+  "pelvis",
+  "peritoneal",
+  "peritoneum",
+  "ascites",
+  "retroperitoneal",
+  "lymph",
+  "node",
+  "aorta",
+  "ivc"
+];
+
+const OTHER_OBSERVATION_NOISE_PATTERNS = [
+  /\b(hello|hi|thanks|thank you|okay|ok|hmm|huh|bye)\b/i,
+  /\b(start|stop|pause|resume)\s+(record(ing)?|dictation)\b/i,
+  /\b(audio|noise|background|music|mic|microphone)\b/i,
+  /\b(patient|attender|relative)\s+(said|speaks?|talking)\b/i,
+  /\b(call|phone|mobile|speaker|network)\b/i,
+  /\b(doctor|dr\.)\s+(please|kindly)\b/i
+];
+
+function isRelevantUsgOtherObservation(text: string) {
+  const normalized = normalizeOtherObservationLine(text).toLowerCase();
+  if (!normalized || normalized.length < 4) return false;
+  if (normalized.length > 260) return false;
+  if (
+    normalized === "[unclear - needs review]" ||
+    normalized === "unclear - needs review"
+  ) {
+    return false;
+  }
+  if (OTHER_OBSERVATION_NOISE_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return USG_ABDOMEN_OTHER_OBS_KEYWORDS.some((keyword) =>
+    normalized.includes(keyword)
+  );
+}
+
+function extractOtherObservations(parsed: Record<string, unknown>) {
+  const candidates = [
+    parsed.other_observations,
+    parsed.otherObservations,
+    parsed.additional_observations,
+    parsed.additionalObservations,
+    parsed.unmapped_findings,
+    parsed.unmappedFindings
+  ];
+  const values: string[] = [];
+
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        if (typeof item !== "string") continue;
+        const normalized = normalizeOtherObservationLine(item);
+        if (normalized) values.push(normalized);
+      }
+      if (values.length) break;
+      continue;
+    }
+    if (typeof candidate === "string" && candidate.trim()) {
+      const normalized = normalizeOtherObservationLine(candidate);
+      if (normalized) values.push(normalized);
+      break;
+    }
+  }
+
+  const unique = Array.from(
+    new Set(values.map((value) => value.toLowerCase()))
+  ).map((lower) => values.find((value) => value.toLowerCase() === lower) || "");
+
+  const accepted: string[] = [];
+  let droppedCount = 0;
+  for (const value of unique.filter(Boolean)) {
+    if (isRelevantUsgOtherObservation(value)) {
+      accepted.push(value);
+      continue;
+    }
+    droppedCount += 1;
+  }
+
+  return {
+    observations: accepted,
+    droppedCount
+  };
+}
+
+function appendOtherObservationsSection(baseText: string, observations: string[]) {
+  if (!observations.length) return baseText;
+  const lines = observations.map((line) => `- ${line}`);
+  return `${baseText.trim()}\n\nOTHER OBSERVATIONS:\n${lines.join("\n")}`;
+}
+
 function normalizeAudioMimeType(file: File) {
   const trimmed = (file.type || "").trim();
   if (trimmed) {
@@ -543,7 +710,11 @@ function genderLabelFromKey(gender: UsgGender) {
 }
 
 function isUsgTemplateId(templateId: string) {
-  return templateId === "USG_ABDOMEN_MALE" || templateId === "USG_ABDOMEN_FEMALE";
+  return (
+    templateId === "USG_ABDOMEN_MALE" ||
+    templateId === "USG_ABDOMEN_FEMALE" ||
+    templateId === CUSTOM_TEMPLATE_ID
+  );
 }
 
 function templateGenderFromId(templateId: string): UsgGender {
@@ -560,73 +731,44 @@ async function callGemini(params: {
   temperature?: number;
 }) {
   const combinedText = `${params.systemText}\n\n${params.userText}`;
-  let data: any = null;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const generationConfig: Record<string, unknown> = {
-      temperature: params.temperature ?? 0.2,
-      maxOutputTokens: params.maxOutputTokens ?? 2048
-    };
-    if (GEMINI_SUPPORTS_RESPONSE_MIME_TYPE !== false) {
-      generationConfig.responseMimeType = "application/json";
-    }
+  const generationConfig: Record<string, unknown> = {
+    temperature: params.temperature ?? 0.2,
+    maxOutputTokens: params.maxOutputTokens ?? 2048
+  };
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1/models/${MODEL_NAME}:generateContent?key=${params.apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: "user",
-              parts: [
-                { text: combinedText },
-                {
-                  inlineData: {
-                    mimeType: params.mimeType,
-                    data: params.audioBase64
-                  }
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1/models/${MODEL_NAME}:generateContent?key=${params.apiKey}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: "user",
+            parts: [
+              { text: combinedText },
+              {
+                inlineData: {
+                  mimeType: params.mimeType,
+                  data: params.audioBase64
                 }
-              ]
-            }
-          ],
-          generationConfig
-        })
-      }
-    );
-
-    if (response.ok) {
-      data = await response.json();
-      if (GEMINI_SUPPORTS_RESPONSE_MIME_TYPE == null) {
-        GEMINI_SUPPORTS_RESPONSE_MIME_TYPE = true;
-      }
-      break;
+              }
+            ]
+          }
+        ],
+        generationConfig
+      })
     }
+  );
 
+  if (!response.ok) {
     const errorText = await response.text();
-    if (
-      response.status === 400 &&
-      GEMINI_SUPPORTS_RESPONSE_MIME_TYPE !== false &&
-      /responseMimeType/i.test(errorText)
-    ) {
-      GEMINI_SUPPORTS_RESPONSE_MIME_TYPE = false;
-      continue;
-    }
-    if (attempt === 0 && (response.status === 500 || response.status === 503)) {
-      if (DEBUG_GEMINI_LOG) {
-        console.log(
-          "[gemini] transient error, retrying:",
-          response.status,
-          errorText
-        );
-      }
-      await new Promise((resolve) => setTimeout(resolve, 650));
-      continue;
-    }
     throw new Error(`Gemini API error: ${response.status} ${errorText}`);
   }
+
+  const data = await response.json();
 
   const parts = data?.candidates?.[0]?.content?.parts || [];
   const text = parts
@@ -665,6 +807,15 @@ export async function POST(request: NextRequest) {
   const formData = await request.formData();
   const templateId = formData.get("template_id")?.toString();
   const audioFile = formData.get("audio_file");
+  const customTemplateTextRaw = formData
+    .get("custom_template_text")
+    ?.toString();
+  const customTemplateGenderRaw = formData
+    .get("custom_template_gender")
+    ?.toString();
+  const customTemplateMappingRaw = formData
+    .get("custom_template_mapping")
+    ?.toString();
 
   if (!templateId) {
     return NextResponse.json({ error: "template_id is required." }, { status: 400 });
@@ -674,6 +825,14 @@ export async function POST(request: NextRequest) {
   if (!template) {
     return NextResponse.json({ error: "Unknown template_id." }, { status: 400 });
   }
+  const isCustomTemplate = template.id === CUSTOM_TEMPLATE_ID;
+  const customTemplateText = (customTemplateTextRaw || "").replace(/\r\n/g, "\n");
+  if (isCustomTemplate && !customTemplateText.trim()) {
+    return NextResponse.json(
+      { error: "custom_template_text is required for USG custom template." },
+      { status: 400 }
+    );
+  }
 
   if (!audioFile || !(audioFile instanceof File)) {
     return NextResponse.json({ error: "audio_file is required." }, { status: 400 });
@@ -681,7 +840,17 @@ export async function POST(request: NextRequest) {
 
   if (audioFile.size > MAX_AUDIO_BYTES) {
     return NextResponse.json(
-      { error: "Audio file exceeds 12MB." },
+      { error: "Audio file exceeds 100MB." },
+      { status: 413 }
+    );
+  }
+
+  if (estimateBase64Size(audioFile.size) > MAX_INLINE_AUDIO_BYTES) {
+    return NextResponse.json(
+      {
+        error:
+          "Audio file is too large for inline upload after base64 encoding (100MB limit). Please upload a smaller file (~75MB max) or switch to the Files API."
+      },
       { status: 413 }
     );
   }
@@ -701,18 +870,32 @@ export async function POST(request: NextRequest) {
   const audioBase64 = audioBuffer.toString("base64");
 
   const isUsg = isUsgTemplateId(template.id);
-  const templateGender = isUsg ? templateGenderFromId(template.id) : "male";
+  const customGender = normalizeGender(customTemplateGenderRaw || "");
+  const templateGender: UsgGender = isUsg
+    ? template.id === CUSTOM_TEMPLATE_ID
+      ? customGender === "female"
+        ? "female"
+        : "male"
+      : templateGenderFromId(template.id)
+    : "male";
+  const customTemplateMapping = sanitizeCustomTemplateMapping(
+    customTemplateMappingRaw || ""
+  );
   const usgTemplateText =
     templateGender === "female"
       ? USG_ABDOMEN_FEMALE_TEMPLATE
       : USG_ABDOMEN_MALE_TEMPLATE;
 
   const systemText = isUsg
-    ? `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Return JSON only. No markdown, no code fences.\n- Use the provided USG Whole Abdomen template for context, but do NOT output it directly.\n- Output MUST include the full fields object with ALL keys present. Do NOT omit keys.\n- Fill ONLY the fields object, patient_name, patient_gender, and exam_date.\n- If a field is not explicitly mentioned, return an empty string for that field.\n- Strings must be valid JSON (no unescaped newlines).\n- If uncertain, write "[Unclear - needs review]" and add a flag.\n- For endometrium_measurement_mm, return numbers only (no units).\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "${template.id}",\n  "patient_name": "",\n  "patient_gender": "",\n  "exam_date": "",\n  "fields": {\n    "liver_main": "",\n    "liver_focal_lesion": "",\n    "liver_hepatic_veins": "",\n    "liver_ihbr": "",\n    "liver_portal_vein": "",\n    "gallbladder_main": "",\n    "gallbladder_calculus_sludge": "",\n    "cbd_main": "",\n    "pancreas_main": "",\n    "pancreas_echotexture": "",\n    "spleen_main": "",\n    "spleen_focal_lesion": "",\n    "kidneys_size": "",\n    "kidneys_main": "",\n    "kidneys_cmd": "",\n    "kidneys_cortical_scarring": "",\n    "kidneys_parenchyma": "",\n    "kidneys_calculus_hydronephrosis": "",\n    "bladder_main": "",\n    "bladder_mass_calculus": "",\n    "prostate_main": "",\n    "prostate_echotexture": "",\n    "uterus_main": "",\n    "uterus_myometrium": "",\n    "endometrium_measurement_mm": "",\n    "ovaries_main": "",\n    "adnexal_mass": "",\n    "peritoneal_fluid": "",\n    "lymph_nodes": "",\n    "impression": "",\n    "correlate_clinically": ""\n  },\n  "flags": [],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`
-    : `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Output must contain ONLY OBSERVATIONS / FINDINGS.\n- Do NOT include Impression, Conclusion, Diagnosis, Advice, Plan, or Recommendations.\n- Do NOT add normal findings unless explicitly spoken in the audio.\n- Do NOT infer missing info. If uncertain, write "[Unclear - needs review]" and add a flag.\n- Pay special attention to negations, laterality, and measurements/units.\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "...",\n  "observations": "...",\n  "flags": ["..."],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`;
+    ? `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Return JSON only. No markdown, no code fences.\n- Use the provided USG Whole Abdomen template for context, but do NOT output it directly.\n- Output MUST include the full fields object with ALL keys present. Do NOT omit keys.\n- Fill ONLY the fields object, patient_name, patient_gender, exam_date, and other_observations.\n- Ignore non-dictation audio (patient conversation, small talk, procedure chatter). Extract only reportable findings.\n- If a finding does not fit the provided canonical fields, put it in other_observations.\n- other_observations MUST contain only USG whole-abdomen relevant findings. Do NOT include chatter/noise/admin instructions.\n- If a field is not explicitly mentioned, return an empty string for that field.\n- Strings must be valid JSON (no unescaped newlines).\n- If uncertain, write "[Unclear - needs review]" and add a flag.\n- For endometrium_measurement_mm, return numbers only (no units).\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "${template.id}",\n  "patient_name": "",\n  "patient_gender": "",\n  "exam_date": "",\n  "fields": {\n    "liver_main": "",\n    "liver_focal_lesion": "",\n    "liver_hepatic_veins": "",\n    "liver_ihbr": "",\n    "liver_portal_vein": "",\n    "gallbladder_main": "",\n    "gallbladder_calculus_sludge": "",\n    "cbd_main": "",\n    "pancreas_main": "",\n    "pancreas_echotexture": "",\n    "spleen_main": "",\n    "spleen_focal_lesion": "",\n    "kidneys_size": "",\n    "kidneys_main": "",\n    "kidneys_cmd": "",\n    "kidneys_cortical_scarring": "",\n    "kidneys_parenchyma": "",\n    "kidneys_calculus_hydronephrosis": "",\n    "bladder_main": "",\n    "bladder_mass_calculus": "",\n    "prostate_main": "",\n    "prostate_echotexture": "",\n    "uterus_main": "",\n    "uterus_myometrium": "",\n    "endometrium_measurement_mm": "",\n    "ovaries_main": "",\n    "adnexal_mass": "",\n    "peritoneal_fluid": "",\n    "lymph_nodes": "",\n    "impression": "",\n    "correlate_clinically": ""\n  },\n  "other_observations": [],\n  "flags": [],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`
+    : `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Output must contain ONLY OBSERVATIONS / FINDINGS.\n- Do NOT include Impression, Conclusion, Diagnosis, Advice, Plan, or Recommendations.\n- Do NOT add normal findings unless explicitly spoken in the audio.\n- Do NOT infer missing info. If uncertain, write "[Unclear - needs review]" and add a flag.\n- Ignore non-dictation audio (patient conversation, small talk, procedure chatter). Extract only reportable findings.\n- Pay special attention to negations, laterality, and measurements/units.\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "...",\n  "observations": "...",\n  "flags": ["..."],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`;
+  const usgModeNote =
+    template.id === CUSTOM_TEMPLATE_ID
+      ? "\nCUSTOM TEMPLATE MODE:\n- Extract canonical USG fields only.\n- Do NOT attempt to format the final custom report layout.\n- Leave unmentioned fields empty."
+      : "";
 
   const userText = isUsg
-    ? `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}\n\nPATIENT INFO:\n- patient_name: full patient name as spoken (if mentioned)\n- patient_gender: male/female as spoken (if mentioned)\n- exam_date: date as spoken (if mentioned)\n\nFIELD GUIDANCE (values plug into the report builder):\n- liver_main: sentence/phrase describing liver size/echotexture\n- liver_focal_lesion: full sentence\n- liver_hepatic_veins: full sentence\n- liver_ihbr: full sentence\n- liver_portal_vein: full sentence\n- gallbladder_main: sentence/phrase describing wall/contour\n- gallbladder_calculus_sludge: full sentence\n- cbd_main: full sentence (e.g., "CBD is normal." or "CBD measures 6 mm and is normal.")\n- pancreas_main: sentence/phrase for size/shape/contour\n- pancreas_echotexture: full sentence\n- spleen_main: sentence/phrase\n- spleen_focal_lesion: full sentence\n- kidneys_size: include right/left measurements if mentioned (e.g., "Right Kidney    : 116x46 mm      Left kidney   :   105x52 mm")\n- kidneys_main: full sentence\n- kidneys_cmd: full sentence\n- kidneys_cortical_scarring: full sentence\n- kidneys_parenchyma: full sentence\n- kidneys_calculus_hydronephrosis: full sentence\n- bladder_main: sentence/phrase\n- bladder_mass_calculus: full sentence\n- prostate_main: full sentence (male only)\n- prostate_echotexture: full sentence (male only)\n- uterus_main: full sentence (female only)\n- uterus_myometrium: full sentence (female only)\n- endometrium_measurement_mm: number only (female only)\n- ovaries_main: full sentence (female only)\n- adnexal_mass: full sentence (female only)\n- peritoneal_fluid: full sentence\n- lymph_nodes: full sentence\n- impression: conclusion or significant findings sentence if mentioned; empty if not mentioned\n- correlate_clinically: "Please correlate clinically." if dictated; empty if not mentioned\n\nAllowed field keys: ${USG_FIELD_KEYS.join(", ")}\n\nUSG WHOLE ABDOMEN TEMPLATE (for context only; do not output directly):\n${usgTemplateText}\n`
+    ? `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}${usgModeNote}\n\nPATIENT INFO:\n- patient_name: full patient name as spoken (if mentioned)\n- patient_gender: male/female as spoken (if mentioned)\n- exam_date: date as spoken (if mentioned)\n\nFIELD GUIDANCE (values plug into the report builder):\n- liver_main: sentence/phrase describing liver size/echotexture\n- liver_focal_lesion: full sentence\n- liver_hepatic_veins: full sentence\n- liver_ihbr: full sentence\n- liver_portal_vein: full sentence\n- gallbladder_main: sentence/phrase describing wall/contour\n- gallbladder_calculus_sludge: full sentence\n- cbd_main: full sentence (e.g., "CBD is normal." or "CBD measures 6 mm and is normal.")\n- pancreas_main: sentence/phrase for size/shape/contour\n- pancreas_echotexture: full sentence\n- spleen_main: sentence/phrase\n- spleen_focal_lesion: full sentence\n- kidneys_size: include right/left measurements if mentioned (e.g., "Right Kidney    : 116x46 mm      Left kidney   :   105x52 mm")\n- kidneys_main: full sentence\n- kidneys_cmd: full sentence\n- kidneys_cortical_scarring: full sentence\n- kidneys_parenchyma: full sentence\n- kidneys_calculus_hydronephrosis: full sentence\n- bladder_main: sentence/phrase\n- bladder_mass_calculus: full sentence\n- prostate_main: full sentence (male only)\n- prostate_echotexture: full sentence (male only)\n- uterus_main: full sentence (female only)\n- uterus_myometrium: full sentence (female only)\n- endometrium_measurement_mm: number only (female only)\n- ovaries_main: full sentence (female only)\n- adnexal_mass: full sentence (female only)\n- peritoneal_fluid: full sentence\n- lymph_nodes: full sentence\n- impression: conclusion or significant findings sentence if mentioned; empty if not mentioned\n- correlate_clinically: "Please correlate clinically." if dictated; empty if not mentioned\n- other_observations: only USG whole-abdomen findings not fitting canonical keys (array of concise strings). Exclude noise/chatter/admin lines.\n\nAllowed field keys: ${USG_FIELD_KEYS.join(", ")}\n\nUSG WHOLE ABDOMEN TEMPLATE (for context only; do not output directly):\n${usgTemplateText}\n`
     : `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}\n\nForbidden output sections: Impression, Conclusion, Diagnosis, Advice, Plan, Recommendations.\nOnly return OBSERVATIONS / FINDINGS.\n\nDo NOT add facts that are not explicitly spoken in the audio.`;
 
   let rawText: string;
@@ -739,27 +922,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  let parsed = parseModelJson(rawText);
-  if (!parsed) {
-    try {
-      const retryText = await callGemini({
-        apiKey,
-        userText: `${userText}\n\nRETURN VALID JSON ONLY. No markdown or code fences.`,
-        systemText,
-        audioBase64,
-        mimeType,
-        maxOutputTokens: isUsg ? 4096 : 2048,
-        temperature: 0.2
-      });
-      debugRawText = retryText;
-      if (DEBUG_GEMINI_LOG) {
-        console.log("[gemini] retry raw response:", retryText);
-      }
-      parsed = parseModelJson(retryText);
-    } catch {
-      // handled below
-    }
-  }
+  const parsed = parseModelJson(rawText);
 
   if (!parsed) {
     const errorPayload: { error: string; debug?: { rawText: string } } = {
@@ -769,30 +932,6 @@ export async function POST(request: NextRequest) {
       errorPayload.debug = { rawText: debugRawText };
     }
     return NextResponse.json(errorPayload, { status: 500 });
-  }
-
-  if (isUsg && !hasAllUsgFieldKeys((parsed as Record<string, unknown>).fields)) {
-    try {
-      const retryText = await callGemini({
-        apiKey,
-        userText: `${userText}\n\nRETURN VALID JSON ONLY. INCLUDE ALL fields KEYS EVEN IF EMPTY. DO NOT OMIT ANY KEY.`,
-        systemText,
-        audioBase64,
-        mimeType,
-        maxOutputTokens: isUsg ? 4096 : 2048,
-        temperature: 0.2
-      });
-      debugRawText = retryText;
-      if (DEBUG_GEMINI_LOG) {
-        console.log("[gemini] retry raw response:", retryText);
-      }
-      const retryParsed = parseModelJson(retryText);
-      if (retryParsed) {
-        parsed = retryParsed;
-      }
-    } catch {
-      // keep original parsed
-    }
   }
 
   if (DEBUG_GEMINI_LOG) {
@@ -806,9 +945,14 @@ export async function POST(request: NextRequest) {
   const extraFlags: string[] = [];
 
   if (isUsg) {
-    const overrides = buildUsgFieldOverrides(parsed as Record<string, unknown>);
+    const parsedUsg = parsed as Record<string, unknown>;
+    const overrides = buildUsgFieldOverrides(parsedUsg);
+    const {
+      observations: otherObservations,
+      droppedCount: droppedOtherObservationsCount
+    } = extractOtherObservations(parsedUsg);
 
-    const patientSource = parsed as Record<string, unknown>;
+    const patientSource = parsedUsg;
     const rawPatientName = getFieldValue(patientSource, [
       "patient_name",
       "patientName",
@@ -841,15 +985,61 @@ export async function POST(request: NextRequest) {
       extraFlags.push("Patient gender unclear; using template gender");
     }
 
-    observationsRaw = buildUsgReport({
-      gender: effectiveGender,
-      patient: {
-        name: rawPatientName,
-        gender: genderLabelFromKey(effectiveGender),
-        date: rawExamDate
-      },
-      overrides
-    });
+    if (!hasAllUsgFieldKeys(parsedUsg.fields)) {
+      extraFlags.push("Model output missing some canonical fields; missing fields treated as empty.");
+    }
+    if (droppedOtherObservationsCount > 0) {
+      extraFlags.push(
+        "Filtered non-USG-abdomen or noisy lines from OTHER OBSERVATIONS."
+      );
+    }
+
+    const patient = {
+      name: rawPatientName,
+      gender: genderLabelFromKey(effectiveGender),
+      date: rawExamDate
+    };
+
+    if (template.id === CUSTOM_TEMPLATE_ID) {
+      const rendered = renderCustomTemplateDeterministically({
+        templateText: customTemplateText,
+        mapping: customTemplateMapping,
+        overrides,
+        gender: effectiveGender,
+        patient
+      });
+      observationsRaw = rendered.text;
+      if (rendered.sectionsDetected === 0) {
+        extraFlags.push(
+          "Custom template headings not detected; returned canonical USG report."
+        );
+      } else if (rendered.sectionsReplaced === 0) {
+        extraFlags.push(
+          "Custom template headings detected but no dictated section overrides found; template body preserved."
+        );
+      }
+      if (rendered.usedFallbackDetection) {
+        extraFlags.push(
+          "Custom template mapping partially resolved using heading heuristics."
+        );
+      }
+    } else {
+      observationsRaw = buildUsgReport({
+        gender: effectiveGender,
+        patient,
+        overrides
+      });
+    }
+
+    if (otherObservations.length) {
+      observationsRaw = appendOtherObservationsSection(
+        observationsRaw,
+        otherObservations
+      );
+      extraFlags.push(
+        "Additional non-canonical observations appended under OTHER OBSERVATIONS."
+      );
+    }
   } else {
     observationsRaw =
       typeof (parsed as any)?.observations === "string"
