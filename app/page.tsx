@@ -22,6 +22,10 @@ import {
   type CustomTemplateMapping,
   type CustomTemplateSectionKey
 } from "@/lib/usgCustomTemplate";
+import {
+  sanitizeTemplateProfile,
+  type TemplateProfile
+} from "@/lib/usgTemplateProfile";
 
 const MAX_AUDIO_BYTES = 100 * 1024 * 1024;
 const MAX_INLINE_AUDIO_BYTES = 100 * 1024 * 1024;
@@ -37,6 +41,9 @@ const IS_GITHUB_PAGES = process.env.NEXT_PUBLIC_GITHUB_PAGES === "true";
 const API_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/generate`
   : "/api/generate";
+const TEMPLATE_PROFILE_ENDPOINT = API_BASE_URL
+  ? `${API_BASE_URL.replace(/\/$/, "")}/api/template-profile`
+  : "/api/template-profile";
 const REPORT_HEADINGS = [
   "Liver:",
   "Gall bladder:",
@@ -224,6 +231,7 @@ async function getAudioDuration(url: string) {
 type StoredCustomTemplateConfig = {
   mapping: CustomTemplateMapping;
   gender: UsgGender;
+  profile?: TemplateProfile | null;
   updatedAt: string;
 };
 
@@ -249,16 +257,20 @@ function loadCustomTemplateConfig(templateText: string) {
   if (!record || typeof record !== "object") return null;
   const mapping = sanitizeCustomTemplateMapping(record.mapping || {});
   const gender: UsgGender = record.gender === "female" ? "female" : "male";
-  return { mapping, gender };
+  const profile = sanitizeTemplateProfile(record.profile || null, {
+    templateHash: hash
+  });
+  return { mapping, gender, profile };
 }
 
 function saveCustomTemplateConfig(params: {
   templateText: string;
   mapping: CustomTemplateMapping;
   gender: UsgGender;
+  profile?: TemplateProfile | null;
 }) {
   if (typeof window === "undefined") return;
-  const { templateText, mapping, gender } = params;
+  const { templateText, mapping, gender, profile } = params;
   const trimmedTemplate = templateText.trim();
   if (!trimmedTemplate) return;
   const hash = hashTemplateText(trimmedTemplate);
@@ -266,12 +278,84 @@ function saveCustomTemplateConfig(params: {
   records[hash] = {
     mapping: sanitizeCustomTemplateMapping(mapping),
     gender,
+    profile: sanitizeTemplateProfile(profile || null, {
+      templateHash: hash
+    }),
     updatedAt: new Date().toISOString()
   };
   window.localStorage.setItem(
     CUSTOM_TEMPLATE_MAPPING_STORAGE_KEY,
     JSON.stringify(records)
   );
+}
+
+const TEMPLATE_PROFILE_LEARNING_STORAGE_KEY =
+  "mvptypist.templateProfileLearning.v1";
+
+function recordUnmappedFindingsLearning(params: {
+  templateText: string;
+  findings: string[];
+}) {
+  if (typeof window === "undefined") return;
+  const { templateText, findings } = params;
+  const templateHash = hashTemplateText(templateText.trim());
+  if (!templateHash || !findings.length) return;
+
+  let store: Record<string, Record<string, number>> = {};
+  try {
+    const raw = window.localStorage.getItem(
+      TEMPLATE_PROFILE_LEARNING_STORAGE_KEY
+    );
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === "object") {
+        store = parsed as Record<string, Record<string, number>>;
+      }
+    }
+  } catch {
+    store = {};
+  }
+
+  const templateStore = store[templateHash] || {};
+  for (const finding of findings) {
+    const normalized = String(finding || "").trim().toLowerCase();
+    if (!normalized) continue;
+    templateStore[normalized] = (templateStore[normalized] || 0) + 1;
+  }
+  store[templateHash] = templateStore;
+  window.localStorage.setItem(
+    TEMPLATE_PROFILE_LEARNING_STORAGE_KEY,
+    JSON.stringify(store)
+  );
+}
+
+function readUnmappedFindingsLearning(templateText: string) {
+  if (typeof window === "undefined") return [] as Array<{ finding: string; count: number }>;
+  const templateHash = hashTemplateText(templateText.trim());
+  if (!templateHash) return [] as Array<{ finding: string; count: number }>;
+  try {
+    const raw = window.localStorage.getItem(TEMPLATE_PROFILE_LEARNING_STORAGE_KEY);
+    if (!raw) return [] as Array<{ finding: string; count: number }>;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return [] as Array<{ finding: string; count: number }>;
+    }
+    const templateStore = (parsed as Record<string, unknown>)[templateHash];
+    if (!templateStore || typeof templateStore !== "object") {
+      return [] as Array<{ finding: string; count: number }>;
+    }
+    const pairs = Object.entries(templateStore as Record<string, unknown>)
+      .map(([finding, count]) => ({
+        finding,
+        count: typeof count === "number" ? count : 0
+      }))
+      .filter((item) => item.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 8);
+    return pairs;
+  } catch {
+    return [] as Array<{ finding: string; count: number }>;
+  }
 }
 
 function isCustomUsgTemplate(templateId: string) {
@@ -301,6 +385,10 @@ export default function Home() {
   const [customTemplateGender, setCustomTemplateGender] = useState<UsgGender>("male");
   const [customTemplateMapping, setCustomTemplateMapping] = useState<CustomTemplateMapping>({});
   const [customTemplateSource, setCustomTemplateSource] = useState("");
+  const [customTemplateProfile, setCustomTemplateProfile] = useState<TemplateProfile | null>(null);
+  const [customTemplateProfileDraft, setCustomTemplateProfileDraft] = useState("");
+  const [customTemplateProfileNotes, setCustomTemplateProfileNotes] = useState<string[]>([]);
+  const [isAnalyzingTemplateProfile, setIsAnalyzingTemplateProfile] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -334,6 +422,13 @@ export default function Home() {
     }
     return options;
   }, [customHeadingCandidates]);
+  const customLearningSuggestions = useMemo(
+    () =>
+      customTemplateText.trim()
+        ? readUnmappedFindingsLearning(customTemplateText)
+        : [],
+    [customTemplateText, rawJson]
+  );
   const observationsPlain = useMemo(() => htmlToPlainText(observations), [observations]);
   const hasObservations = Boolean(observationsPlain.trim());
 
@@ -371,6 +466,13 @@ export default function Home() {
     if (stored?.gender) {
       setCustomTemplateGender(stored.gender);
     }
+    if (stored?.profile) {
+      setCustomTemplateProfile(stored.profile);
+      setCustomTemplateProfileDraft(JSON.stringify(stored.profile, null, 2));
+    } else {
+      setCustomTemplateProfile(null);
+      setCustomTemplateProfileDraft("");
+    }
   }, [
     isCustomTemplateMode,
     customTemplateText,
@@ -385,19 +487,22 @@ export default function Home() {
     saveCustomTemplateConfig({
       templateText: customTemplateText,
       mapping: customTemplateMapping,
-      gender: customTemplateGender
+      gender: customTemplateGender,
+      profile: customTemplateProfile
     });
   }, [
     isCustomTemplateMode,
     customTemplateText,
     customTemplateMapping,
-    customTemplateGender
+    customTemplateGender,
+    customTemplateProfile
   ]);
 
   const applyCustomTemplateText = (nextText: string, source: string) => {
     const normalized = nextText.replace(/\r\n/g, "\n");
     setCustomTemplateText(normalized);
     setCustomTemplateSource(source);
+    setCustomTemplateProfileNotes([]);
   };
 
   const handleAutoMapCustomTemplate = () => {
@@ -434,6 +539,89 @@ export default function Home() {
     } finally {
       event.target.value = "";
     }
+  };
+
+  const applyCustomTemplateProfileDraft = () => {
+    const sanitized = sanitizeTemplateProfile(customTemplateProfileDraft, {
+      templateHash: hashTemplateText(customTemplateText.trim())
+    });
+    if (!sanitized) {
+      setError("Profile JSON is invalid. Please review and try again.");
+      return false;
+    }
+    setCustomTemplateProfile(sanitized);
+    setCustomTemplateProfileDraft(JSON.stringify(sanitized, null, 2));
+    setError(null);
+    return true;
+  };
+
+  const handleAnalyzeTemplateProfile = async () => {
+    if (!customTemplateText.trim()) {
+      setError("Paste or upload custom template text before AI analysis.");
+      return;
+    }
+    if (!isBackendConfigured) {
+      setError("Template intelligence is disabled on this static site. Configure NEXT_PUBLIC_API_BASE_URL.");
+      return;
+    }
+    setIsAnalyzingTemplateProfile(true);
+    setError(null);
+    try {
+      const response = await fetch(TEMPLATE_PROFILE_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          template_text: customTemplateText,
+          template_gender: customTemplateGender
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload?.error || "Template intelligence failed.");
+      }
+      const sanitized = sanitizeTemplateProfile(payload?.profile || null, {
+        templateHash: hashTemplateText(customTemplateText.trim())
+      });
+      if (!sanitized) {
+        throw new Error("AI returned an invalid template profile.");
+      }
+      setCustomTemplateProfile(sanitized);
+      setCustomTemplateProfileDraft(JSON.stringify(sanitized, null, 2));
+      setCustomTemplateProfileNotes(
+        Array.isArray(payload?.notes)
+          ? payload.notes.map((note: unknown) => String(note || "")).filter(Boolean)
+          : []
+      );
+    } catch (profileError) {
+      setError((profileError as Error).message);
+    } finally {
+      setIsAnalyzingTemplateProfile(false);
+    }
+  };
+
+  const setProfileApproved = (approved: boolean) => {
+    const parsed =
+      sanitizeTemplateProfile(customTemplateProfileDraft, {
+        templateHash: hashTemplateText(customTemplateText.trim())
+      }) || customTemplateProfile;
+    if (!parsed) {
+      setError("Create or apply a valid template profile before approval.");
+      return;
+    }
+    const nextProfile = {
+      ...parsed,
+      approved
+    };
+    const sanitized = sanitizeTemplateProfile(nextProfile, {
+      templateHash: hashTemplateText(customTemplateText.trim())
+    });
+    if (!sanitized) {
+      setError("Unable to update profile approval state.");
+      return;
+    }
+    setCustomTemplateProfile(sanitized);
+    setCustomTemplateProfileDraft(JSON.stringify(sanitized, null, 2));
+    setError(null);
   };
 
   const resetAudio = () => {
@@ -485,6 +673,13 @@ export default function Home() {
       setError("Add custom template text before generating.");
       return;
     }
+    if (
+      isCustomTemplateMode &&
+      (!customTemplateProfile || !customTemplateProfile.approved)
+    ) {
+      setError("Run AI Template Intelligence, review profile JSON, and approve profile before generating.");
+      return;
+    }
 
     setIsGenerating(true);
     setError(null);
@@ -500,6 +695,12 @@ export default function Home() {
           "custom_template_mapping",
           JSON.stringify(customTemplateMapping)
         );
+        if (customTemplateProfile) {
+          formData.append(
+            "custom_template_profile",
+            JSON.stringify(customTemplateProfile)
+          );
+        }
       }
 
       const response = await fetch(API_ENDPOINT, { method: "POST", body: formData });
@@ -511,6 +712,17 @@ export default function Home() {
       setObservations(formatReportHtml(observationsText, templateId));
       setFlags(Array.isArray(payload.flags) ? payload.flags : []);
       setDisclaimer(String(payload.disclaimer || ""));
+      if (
+        isCustomTemplateMode &&
+        Array.isArray(payload?.profile_feedback?.unmapped_findings)
+      ) {
+        recordUnmappedFindingsLearning({
+          templateText: customTemplateText,
+          findings: payload.profile_feedback.unmapped_findings.map((item: unknown) =>
+            String(item || "")
+          )
+        });
+      }
       setRawJson(JSON.stringify(payload, null, 2));
       setActiveView("report");
     } catch (generateError) {
@@ -669,9 +881,13 @@ export default function Home() {
   };
 
   const customTemplateReady = !isCustomTemplateMode || Boolean(customTemplateText.trim());
-  const canGoRecording = Boolean(templateId) && customTemplateReady;
+  const customTemplateProfileReady =
+    !isCustomTemplateMode || Boolean(customTemplateProfile?.approved);
+  const canGoRecording =
+    Boolean(templateId) && customTemplateReady && customTemplateProfileReady;
   const canGoReport = Boolean(audioFile);
-  const canProcessAudio = Boolean(templateId) && customTemplateReady;
+  const canProcessAudio =
+    Boolean(templateId) && customTemplateReady && customTemplateProfileReady;
   const recordingTime = isRecording ? elapsedSeconds : audioDuration || elapsedSeconds;
 
   if (activeView === "dashboard") {
@@ -961,6 +1177,100 @@ export default function Home() {
                       ))}
                     </div>
                   </div>
+                </div>
+
+                <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+                  <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h3 className="text-sm font-bold uppercase tracking-wide text-slate-700 dark:text-slate-200">
+                        Template Intelligence Profile
+                      </h3>
+                      <p className="text-xs text-slate-500">
+                        One-time AI proposal. Review/edit JSON, then approve before dictation.
+                      </p>
+                    </div>
+                    <span
+                      className={`rounded px-2 py-1 text-[10px] font-bold uppercase tracking-wide ${
+                        customTemplateProfile?.approved
+                          ? "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-300"
+                          : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
+                      }`}
+                    >
+                      {customTemplateProfile?.approved ? "Approved" : "Pending Approval"}
+                    </span>
+                  </div>
+
+                  <div className="mb-3 flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={handleAnalyzeTemplateProfile}
+                      className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={isAnalyzingTemplateProfile || !customTemplateText.trim()}
+                      type="button"
+                    >
+                      {isAnalyzingTemplateProfile
+                        ? "Analyzing..."
+                        : "AI Analyze Template"}
+                    </button>
+                    <button
+                      onClick={applyCustomTemplateProfileDraft}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      type="button"
+                    >
+                      Apply Edited JSON
+                    </button>
+                    <button
+                      onClick={() => setProfileApproved(true)}
+                      className="rounded-lg border border-green-300 bg-green-50 px-3 py-2 text-xs font-semibold text-green-700 hover:bg-green-100 dark:border-green-800 dark:bg-green-900/20 dark:text-green-300 dark:hover:bg-green-900/30"
+                      type="button"
+                    >
+                      Approve Profile
+                    </button>
+                    <button
+                      onClick={() => setProfileApproved(false)}
+                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                      type="button"
+                    >
+                      Mark Pending
+                    </button>
+                  </div>
+
+                  <textarea
+                    value={customTemplateProfileDraft}
+                    onChange={(event) => setCustomTemplateProfileDraft(event.target.value)}
+                    placeholder='{"sections":[...],"fields":[...]}'
+                    className="h-44 w-full rounded-lg border border-slate-200 bg-white p-3 font-mono text-xs text-slate-700 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  />
+
+                  {customTemplateProfileNotes.length > 0 && (
+                    <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 p-3 text-xs text-blue-800 dark:border-blue-900/50 dark:bg-blue-900/20 dark:text-blue-200">
+                      <p className="mb-1 font-semibold uppercase tracking-wide">
+                        AI Notes
+                      </p>
+                      <ul className="list-disc space-y-1 pl-4">
+                        {customTemplateProfileNotes.map((note) => (
+                          <li key={note}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+
+                  {customLearningSuggestions.length > 0 && (
+                    <div className="mt-3 rounded-lg border border-violet-200 bg-violet-50 p-3 text-xs text-violet-800 dark:border-violet-900/40 dark:bg-violet-900/20 dark:text-violet-200">
+                      <p className="mb-1 font-semibold uppercase tracking-wide">
+                        Profile Update Suggestions
+                      </p>
+                      <p className="mb-1 text-[11px]">
+                        Repeated unmapped findings seen in prior reports. Consider adding fields for these.
+                      </p>
+                      <ul className="list-disc space-y-1 pl-4">
+                        {customLearningSuggestions.map((item) => (
+                          <li key={`${item.finding}-${item.count}`}>
+                            {item.finding} ({item.count}x)
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
                 </div>
               </section>
             )}
@@ -1600,7 +1910,14 @@ export default function Home() {
                 <button
                   className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={() => handleGenerate()}
-                  disabled={!templateId || !audioFile || isGenerating || !isBackendConfigured || !customTemplateReady}
+                  disabled={
+                    !templateId ||
+                    !audioFile ||
+                    isGenerating ||
+                    !isBackendConfigured ||
+                    !customTemplateReady ||
+                    !customTemplateProfileReady
+                  }
                 >
                   {isGenerating ? "Generating..." : "Generate"}
                 </button>
