@@ -2,10 +2,44 @@
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import * as mammoth from "mammoth";
+import type { User } from "firebase/auth";
+import {
+  createUserWithEmailAndPassword,
+  onAuthStateChanged,
+  signInWithEmailAndPassword,
+  signOut,
+  updateProfile
+} from "firebase/auth";
+import {
+  collection,
+  doc,
+  getDoc,
+  increment,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  runTransaction,
+  serverTimestamp,
+  setDoc
+} from "firebase/firestore";
+import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import Editor from "@/components/Editor";
 import { templates } from "@/lib/templates";
 import { exportDocx } from "@/lib/exportDocx";
 import { exportPdf } from "@/lib/exportPdf";
+import { getFirebaseClient, isFirebaseClientConfigured } from "@/lib/firebaseClient";
+import {
+  deriveDashboardStats,
+  fileNameSafe,
+  labelForStatus,
+  modalityForTemplateId,
+  parsePatientFromReport,
+  parseTimestampToMillis,
+  statusBadgeClasses,
+  type ReportRecord,
+  type ReportStatus
+} from "@/lib/firebasePersistence";
 import {
   type UsgGender,
   USG_ABDOMEN_FEMALE_TEMPLATE,
@@ -212,10 +246,24 @@ function formatBytes(bytes: number) {
 }
 
 function formatDuration(totalSeconds: number | null) {
-  if (!totalSeconds && totalSeconds !== 0) return "--:--";
+  if (
+    typeof totalSeconds !== "number" ||
+    !Number.isFinite(totalSeconds) ||
+    totalSeconds < 0
+  ) {
+    return "--:--";
+  }
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = Math.floor(totalSeconds % 60);
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function formatGeneratedTime(valueMs: number) {
+  if (!valueMs || !Number.isFinite(valueMs)) return "N/A";
+  return new Date(valueMs).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 async function getAudioDuration(url: string) {
@@ -366,15 +414,79 @@ function labelForSectionKey(sectionKey: CustomTemplateSectionKey) {
   return sectionKey.replace(/_/g, " ");
 }
 
+type DoctorProfile = {
+  displayName: string;
+  role: string;
+  email: string;
+};
+
+type SavedCustomTemplate = {
+  id: string;
+  name: string;
+  templateText: string;
+  gender: UsgGender;
+  mapping: CustomTemplateMapping;
+  profile: TemplateProfile | null;
+  templateHash: string;
+  useCount: number;
+  lastUsedAtMs: number;
+  updatedAtMs: number;
+};
+
+function randomAccessionId() {
+  return `ACC-${Math.floor(10000 + Math.random() * 90000)}-${Math.random()
+    .toString(36)
+    .slice(2, 3)
+    .toUpperCase()}`;
+}
+
+function firebaseErrorMessage(error: unknown) {
+  const message = String((error as { message?: string })?.message || "Unknown error");
+  if (message.includes("auth/invalid-credential")) {
+    return "Invalid credentials. Check email and password.";
+  }
+  if (message.includes("auth/email-already-in-use")) {
+    return "Email already registered. Sign in instead.";
+  }
+  if (message.includes("auth/weak-password")) {
+    return "Password is too weak (minimum 6 characters).";
+  }
+  return message;
+}
+
+function storageAudioLoadErrorMessage(error: unknown) {
+  const code = String((error as { code?: string })?.code || "");
+  const message = String((error as { message?: string })?.message || "");
+  if (code.includes("storage/object-not-found")) {
+    return "Saved recording file was not found in Firebase Storage.";
+  }
+  if (
+    code.includes("storage/unauthorized") ||
+    code.includes("storage/unauthenticated")
+  ) {
+    return "Storage read is blocked by Firebase rules. Allow authenticated read for users/{uid}/recordings/**.";
+  }
+  if (code.includes("storage/retry-limit-exceeded")) {
+    return "Storage request timed out. Please retry.";
+  }
+  if (code.includes("storage/invalid-url") || message.includes("Audio fetch failed")) {
+    return "Saved recording URL is stale/invalid. Please re-record once to refresh it.";
+  }
+  return message || "Could not load previous recording from Firebase.";
+}
+
 export default function Home() {
+  const firebaseClient = useMemo(() => getFirebaseClient(), []);
   const [templateId, setTemplateId] = useState("");
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [audioDuration, setAudioDuration] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isRecordingPaused, setIsRecordingPaused] = useState(false);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [processingTopicProgress, setProcessingTopicProgress] = useState(0);
   const [observations, setObservations] = useState("");
   const [flags, setFlags] = useState<string[]>([]);
   const [disclaimer, setDisclaimer] = useState("");
@@ -389,15 +501,52 @@ export default function Home() {
   const [customTemplateProfileDraft, setCustomTemplateProfileDraft] = useState("");
   const [customTemplateProfileNotes, setCustomTemplateProfileNotes] = useState<string[]>([]);
   const [isAnalyzingTemplateProfile, setIsAnalyzingTemplateProfile] = useState(false);
+  const [authReady, setAuthReady] = useState(!isFirebaseClientConfigured);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null);
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
+  const [isAuthLoading, setIsAuthLoading] = useState(false);
+  const [reports, setReports] = useState<ReportRecord[]>([]);
+  const [isReportsLoading, setIsReportsLoading] = useState(false);
+  const [activeReportId, setActiveReportId] = useState("");
+  const [isSavingReport, setIsSavingReport] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [worklistStatusFilter, setWorklistStatusFilter] = useState<
+    "all" | ReportStatus
+  >("all");
+  const [isQuickTemplatesExpanded, setIsQuickTemplatesExpanded] = useState(false);
+  const [isManageTemplatesOpen, setIsManageTemplatesOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [allowRecordingFromReport, setAllowRecordingFromReport] = useState(false);
+  const [isLoadingSavedAudio, setIsLoadingSavedAudio] = useState(false);
+  const [detectedMicLabel, setDetectedMicLabel] = useState("Mic not initialized");
+  const [inputLatencyMs, setInputLatencyMs] = useState<number | null>(null);
+  const [savedCustomTemplates, setSavedCustomTemplates] = useState<
+    SavedCustomTemplate[]
+  >([]);
+  const [isSavedCustomTemplatesLoading, setIsSavedCustomTemplatesLoading] =
+    useState(false);
+  const [activeCustomTemplateId, setActiveCustomTemplateId] = useState("");
+  const [customTemplateLabel, setCustomTemplateLabel] = useState("");
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const recordedBytesRef = useRef(0);
   const timerRef = useRef<number | null>(null);
+  const recordingStartMsRef = useRef<number | null>(null);
   const audioUrlRef = useRef<string | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
   const fullscreenEditorRef = useRef<HTMLDivElement | null>(null);
   const generateAfterStopRef = useRef(false);
+  const loadedSavedAudioReportIdRef = useRef("");
+  const reportAudioCacheRef = useRef<Record<string, File>>({});
+  const loadedCustomConfigHashRef = useRef("");
+  const customTemplateSaveTimerRef = useRef<number | null>(null);
+  const worklistSectionRef = useRef<HTMLElement | null>(null);
+  const wasSearchModeRef = useRef(false);
 
   const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
   const selectedTemplate = useMemo(
@@ -431,6 +580,100 @@ export default function Home() {
   );
   const observationsPlain = useMemo(() => htmlToPlainText(observations), [observations]);
   const hasObservations = Boolean(observationsPlain.trim());
+  const dashboardStats = useMemo(() => deriveDashboardStats(reports), [reports]);
+  const searchedReports = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return reports;
+    return reports.filter((item) =>
+      [
+        item.patientName,
+        item.patientId,
+        item.accession,
+        item.templateTitle,
+        item.status
+      ]
+        .join(" ")
+        .toLowerCase()
+        .includes(q)
+    );
+  }, [reports, searchQuery]);
+  const filteredReports = useMemo(() => {
+    if (worklistStatusFilter === "all") return searchedReports;
+    return searchedReports.filter((item) => item.status === worklistStatusFilter);
+  }, [searchedReports, worklistStatusFilter]);
+  const worklistCounts = useMemo(() => {
+    const draft = reports.filter((item) => item.status === "draft").length;
+    const pending = reports.filter((item) => item.status === "pending_review").length;
+    const completed = reports.filter((item) => item.status === "completed").length;
+    return {
+      all: reports.length,
+      draft,
+      pending_review: pending,
+      completed
+    };
+  }, [reports]);
+  const nextPatientIdSeed = useMemo(() => {
+    let maxSeen = 999;
+    for (const report of reports) {
+      const numeric = Number.parseInt(String(report.patientId || "").trim(), 10);
+      if (Number.isFinite(numeric) && numeric > maxSeen) {
+        maxSeen = numeric;
+      }
+    }
+    return Math.max(1000, maxSeen + 1);
+  }, [reports]);
+  const recentTemplateIds = useMemo(() => {
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const item of reports) {
+      const key = item.templateId;
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      ordered.push(key);
+    }
+    return ordered;
+  }, [reports]);
+  const quickTemplates = useMemo(() => {
+    const rank = new Map<string, number>();
+    for (let i = 0; i < recentTemplateIds.length; i += 1) {
+      rank.set(recentTemplateIds[i], i);
+    }
+    return [...templates].sort((a, b) => {
+      const ra = rank.has(a.id) ? rank.get(a.id)! : Number.MAX_SAFE_INTEGER;
+      const rb = rank.has(b.id) ? rank.get(b.id)! : Number.MAX_SAFE_INTEGER;
+      if (ra !== rb) return ra - rb;
+      return templates.findIndex((item) => item.id === a.id) -
+        templates.findIndex((item) => item.id === b.id);
+    });
+  }, [recentTemplateIds]);
+  const activeReport = useMemo(
+    () => reports.find((item) => item.id === activeReportId) || null,
+    [reports, activeReportId]
+  );
+  const activeReportStatus = activeReport?.status || null;
+  const doctorName =
+    doctorProfile?.displayName ||
+    currentUser?.displayName ||
+    (currentUser?.email ? currentUser.email.split("@")[0] : "Doctor");
+  const isSearchMode = Boolean(searchQuery.trim());
+  const visibleQuickTemplates = isQuickTemplatesExpanded
+    ? quickTemplates
+    : quickTemplates.slice(0, 4);
+  const sidebarWidthClass = isSidebarCollapsed ? "w-20" : "w-64";
+  const sidebarOffsetClass = isSidebarCollapsed ? "lg:ml-20" : "lg:ml-64";
+  const recordingSidebarTopics = useMemo(() => {
+    const fallback = [
+      "Liver",
+      "Gall bladder",
+      "CBD",
+      "Pancreas",
+      "Spleen",
+      "Kidneys"
+    ];
+    const selectedTopics = selectedTemplate?.allowedTopics || fallback;
+    const topics = selectedTopics.slice(0, 6);
+    return topics.length ? topics : fallback;
+  }, [selectedTemplate]);
 
   useEffect(() => {
     return () => {
@@ -447,37 +690,351 @@ export default function Home() {
   }, [isFullscreen]);
 
   useEffect(() => {
+    if (isSearchMode && !wasSearchModeRef.current) {
+      const timer = window.setTimeout(() => {
+        const node = worklistSectionRef.current;
+        if (!node) return;
+        node.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 80);
+      wasSearchModeRef.current = true;
+      return () => window.clearTimeout(timer);
+    }
+    if (!isSearchMode) {
+      wasSearchModeRef.current = false;
+    }
+  }, [isSearchMode]);
+
+  useEffect(() => {
+    if (activeView !== "recording" || !isGenerating) {
+      setProcessingTopicProgress(0);
+      return;
+    }
+    setProcessingTopicProgress(0);
+    let completed = 0;
+    const total = recordingSidebarTopics.length;
+    const timer = window.setInterval(() => {
+      completed = Math.min(total, completed + 1);
+      setProcessingTopicProgress(completed);
+      if (completed >= total) {
+        window.clearInterval(timer);
+      }
+    }, 320);
+    return () => window.clearInterval(timer);
+  }, [activeView, isGenerating, recordingSidebarTopics.length]);
+
+  useEffect(() => {
+    if (!error) return;
+    const timer = window.setTimeout(() => {
+      setError(null);
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [error]);
+
+  useEffect(() => {
+    if (!firebaseClient) {
+      setAuthReady(true);
+      return;
+    }
+    const unsubscribe = onAuthStateChanged(firebaseClient.auth, async (user) => {
+      setCurrentUser(user);
+      if (!user) {
+        setDoctorProfile(null);
+        setReports([]);
+        setActiveReportId("");
+        setAuthReady(true);
+        return;
+      }
+      try {
+        const profileRef = doc(
+          firebaseClient.db,
+          `users/${user.uid}/profile/main`
+        );
+        const profileSnap = await getDoc(profileRef);
+        const existing = profileSnap.data() as Record<string, unknown> | undefined;
+        const fallbackName =
+          user.displayName || user.email?.split("@")[0] || "Doctor";
+        const profile: DoctorProfile = {
+          displayName:
+            String(existing?.displayName || "").trim() || fallbackName,
+          role: String(existing?.role || "Radiologist"),
+          email: String(existing?.email || user.email || "")
+        };
+        await setDoc(
+          profileRef,
+          {
+            displayName: profile.displayName,
+            role: profile.role,
+            email: profile.email,
+            updatedAt: serverTimestamp(),
+            createdAt: existing?.createdAt || serverTimestamp()
+          },
+          { merge: true }
+        );
+        setDoctorProfile(profile);
+      } catch (profileError) {
+        setError(firebaseErrorMessage(profileError));
+      } finally {
+        setAuthReady(true);
+      }
+    });
+    return () => unsubscribe();
+  }, [firebaseClient]);
+
+  useEffect(() => {
+    if (!firebaseClient || !currentUser) {
+      setReports([]);
+      setIsReportsLoading(false);
+      return;
+    }
+    setIsReportsLoading(true);
+    const reportsQuery = query(
+      collection(firebaseClient.db, `users/${currentUser.uid}/reports`),
+      orderBy("updatedAt", "desc"),
+      limit(100)
+    );
+
+    const unsubscribe = onSnapshot(
+      reportsQuery,
+      (snapshot) => {
+        const next: ReportRecord[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Record<string, unknown>;
+          const statusRaw = String(data.status || "draft");
+          const status: ReportStatus =
+            statusRaw === "completed" ||
+            statusRaw === "pending_review" ||
+            statusRaw === "discarded"
+              ? statusRaw
+              : "draft";
+          return {
+            id: docSnap.id,
+            templateId: String(data.templateId || ""),
+            templateTitle: String(data.templateTitle || ""),
+            patientName: String(data.patientName || "Unknown Patient"),
+            patientGender: String(data.patientGender || ""),
+            patientDate: String(data.patientDate || ""),
+            patientId: String(data.patientId || ""),
+            accession: String(data.accession || ""),
+            status,
+            observationsHtml: String(data.observationsHtml || ""),
+            observationsText: String(data.observationsText || ""),
+            rawJson: String(data.rawJson || ""),
+            flags: Array.isArray(data.flags)
+              ? data.flags.map((item) => String(item || ""))
+              : [],
+            disclaimer: String(data.disclaimer || ""),
+            audioName: String(data.audioName || ""),
+            audioSize: Number(data.audioSize || 0),
+            audioType: String(data.audioType || ""),
+            audioDurationSec: Number(data.audioDurationSec || 0),
+            audioStoragePath: String(data.audioStoragePath || ""),
+            audioDownloadUrl: String(data.audioDownloadUrl || ""),
+            generationMs: Number(data.generationMs || 0),
+            generatedAtMs:
+              parseTimestampToMillis(data.generatedAt) ||
+              parseTimestampToMillis(data.createdAt),
+            customTemplateText: String(data.customTemplateText || ""),
+            customTemplateGender:
+              String(data.customTemplateGender || "male") === "female"
+                ? "female"
+                : "male",
+            customTemplateMappingJson: String(data.customTemplateMappingJson || ""),
+            customTemplateProfileJson: String(data.customTemplateProfileJson || ""),
+            createdAtMs: parseTimestampToMillis(data.createdAt),
+            updatedAtMs: parseTimestampToMillis(data.updatedAt)
+          };
+        });
+        setReports(next.filter((item) => item.status !== "discarded"));
+        setIsReportsLoading(false);
+      },
+      (snapshotError) => {
+        setError(firebaseErrorMessage(snapshotError));
+        setIsReportsLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, [firebaseClient, currentUser]);
+
+  useEffect(() => {
+    if (!firebaseClient || !currentUser) {
+      setSavedCustomTemplates([]);
+      setIsSavedCustomTemplatesLoading(false);
+      return;
+    }
+    setIsSavedCustomTemplatesLoading(true);
+    const templatesQuery = query(
+      collection(firebaseClient.db, `users/${currentUser.uid}/savedCustomTemplates`),
+      orderBy("lastUsedAt", "desc"),
+      limit(50)
+    );
+    const unsubscribe = onSnapshot(
+      templatesQuery,
+      (snapshot) => {
+        const next = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data() as Record<string, unknown>;
+          const templateText = String(data.templateText || "");
+          const templateHash =
+            String(data.templateHash || "").trim() ||
+            hashTemplateText(templateText.trim());
+          const mapping = sanitizeCustomTemplateMapping(data.mapping || {});
+          const profile = sanitizeTemplateProfile(data.profile || null, {
+            templateHash
+          });
+          const entry: SavedCustomTemplate = {
+            id: docSnap.id,
+            name: String(data.name || "").trim() || `Custom ${docSnap.id.slice(0, 6)}`,
+            templateText,
+            gender: data.gender === "female" ? "female" : "male",
+            mapping,
+            profile,
+            templateHash,
+            useCount: Number(data.useCount || 0),
+            lastUsedAtMs: parseTimestampToMillis(data.lastUsedAt),
+            updatedAtMs: parseTimestampToMillis(data.updatedAt)
+          };
+          return entry;
+        });
+        setSavedCustomTemplates(next);
+        setIsSavedCustomTemplatesLoading(false);
+      },
+      (snapshotError) => {
+        setError(firebaseErrorMessage(snapshotError));
+        setIsSavedCustomTemplatesLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, [firebaseClient, currentUser]);
+
+  useEffect(() => {
+    if (!firebaseClient || !currentUser || !activeReportId) {
+      return;
+    }
+    if (!observationsPlain.trim()) {
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      try {
+        await setDoc(
+          doc(firebaseClient.db, `users/${currentUser.uid}/reports/${activeReportId}`),
+          {
+            observationsHtml: observations,
+            observationsText: observationsPlain,
+            rawJson,
+            flags,
+            disclaimer,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+      } catch (autosaveError) {
+        setError(firebaseErrorMessage(autosaveError));
+      }
+    }, 1200);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [
+    firebaseClient,
+    currentUser,
+    activeReportId,
+    observations,
+    observationsPlain,
+    rawJson,
+    flags,
+    disclaimer
+  ]);
+
+  useEffect(() => {
     if (!isCustomTemplateMode || !customTemplateText.trim()) {
       return;
     }
-    const stored = loadCustomTemplateConfig(customTemplateText);
-    const autoMapping = autoMapHeadingCandidates(customHeadingCandidates);
-    const nextMapping = sanitizeCustomTemplateMapping(
-      stored?.mapping || autoMapping
-    );
-    const validMapping: CustomTemplateMapping = {};
-    for (const key of CUSTOM_TEMPLATE_SECTION_KEYS) {
-      const mappedHeading = nextMapping[key];
-      if (!mappedHeading) continue;
-      if (!customHeadingOptions.includes(mappedHeading)) continue;
-      validMapping[key] = mappedHeading;
-    }
-    setCustomTemplateMapping(validMapping);
-    if (stored?.gender) {
-      setCustomTemplateGender(stored.gender);
-    }
-    if (stored?.profile) {
-      setCustomTemplateProfile(stored.profile);
-      setCustomTemplateProfileDraft(JSON.stringify(stored.profile, null, 2));
-    } else {
-      setCustomTemplateProfile(null);
-      setCustomTemplateProfileDraft("");
-    }
+    let cancelled = false;
+    const run = async () => {
+      const templateHash = hashTemplateText(customTemplateText.trim());
+      let stored = loadCustomTemplateConfig(customTemplateText);
+
+      if (firebaseClient && currentUser && templateHash) {
+        try {
+          const cloudRef = doc(
+            firebaseClient.db,
+            `users/${currentUser.uid}/customTemplates/${templateHash}`
+          );
+          const cloudSnap = await getDoc(cloudRef);
+          if (cloudSnap.exists()) {
+            const cloudData = cloudSnap.data() as Record<string, unknown>;
+            stored = {
+              mapping: sanitizeCustomTemplateMapping(cloudData.mapping || {}),
+              gender: cloudData.gender === "female" ? "female" : "male",
+              profile: sanitizeTemplateProfile(cloudData.profile || null, {
+                templateHash
+              })
+            };
+          }
+        } catch (cloudError) {
+          setError(firebaseErrorMessage(cloudError));
+        }
+      }
+
+      if (cancelled) return;
+      const autoMapping = autoMapHeadingCandidates(customHeadingCandidates);
+      const nextMapping = sanitizeCustomTemplateMapping(
+        stored?.mapping || autoMapping
+      );
+      const validMapping: CustomTemplateMapping = {};
+      for (const key of CUSTOM_TEMPLATE_SECTION_KEYS) {
+        const mappedHeading = nextMapping[key];
+        if (!mappedHeading) continue;
+        if (!customHeadingOptions.includes(mappedHeading)) continue;
+        validMapping[key] = mappedHeading;
+      }
+
+      if (loadedCustomConfigHashRef.current !== templateHash) {
+        setCustomTemplateMapping(validMapping);
+        if (stored?.gender) {
+          setCustomTemplateGender(stored.gender);
+        }
+        if (stored?.profile) {
+          setCustomTemplateProfile(stored.profile);
+          setCustomTemplateProfileDraft(JSON.stringify(stored.profile, null, 2));
+        } else {
+          setCustomTemplateProfile(null);
+          setCustomTemplateProfileDraft("");
+        }
+        loadedCustomConfigHashRef.current = templateHash;
+      }
+    };
+
+    run();
+    return () => {
+      cancelled = true;
+    };
   }, [
     isCustomTemplateMode,
     customTemplateText,
     customHeadingCandidates,
-    customHeadingOptions
+    customHeadingOptions,
+    firebaseClient,
+    currentUser
+  ]);
+
+  useEffect(() => {
+    if (!isCustomTemplateMode || !customTemplateText.trim()) return;
+    const templateHash = hashTemplateText(customTemplateText.trim());
+    const matched = savedCustomTemplates.find(
+      (item) => item.id === activeCustomTemplateId || item.templateHash === templateHash
+    );
+    if (!matched) return;
+    if (!activeCustomTemplateId) {
+      setActiveCustomTemplateId(matched.id);
+    }
+    if (!customTemplateLabel.trim()) {
+      setCustomTemplateLabel(matched.name);
+    }
+  }, [
+    isCustomTemplateMode,
+    customTemplateText,
+    savedCustomTemplates,
+    activeCustomTemplateId,
+    customTemplateLabel
   ]);
 
   useEffect(() => {
@@ -490,12 +1047,53 @@ export default function Home() {
       gender: customTemplateGender,
       profile: customTemplateProfile
     });
+    if (!firebaseClient || !currentUser) {
+      return;
+    }
+
+    if (customTemplateSaveTimerRef.current) {
+      window.clearTimeout(customTemplateSaveTimerRef.current);
+    }
+    customTemplateSaveTimerRef.current = window.setTimeout(async () => {
+      try {
+        const templateHash = hashTemplateText(customTemplateText.trim());
+        if (!templateHash) return;
+        await setDoc(
+          doc(
+            firebaseClient.db,
+            `users/${currentUser.uid}/customTemplates/${templateHash}`
+          ),
+          {
+            templateText: customTemplateText.trim(),
+            mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
+            gender: customTemplateGender,
+            profile: sanitizeTemplateProfile(customTemplateProfile || null, {
+              templateHash
+            }),
+            source: customTemplateSource,
+            updatedAt: serverTimestamp()
+          },
+          { merge: true }
+        );
+      } catch (cloudSaveError) {
+        setError(firebaseErrorMessage(cloudSaveError));
+      }
+    }, 600);
+
+    return () => {
+      if (customTemplateSaveTimerRef.current) {
+        window.clearTimeout(customTemplateSaveTimerRef.current);
+      }
+    };
   }, [
     isCustomTemplateMode,
     customTemplateText,
     customTemplateMapping,
     customTemplateGender,
-    customTemplateProfile
+    customTemplateProfile,
+    customTemplateSource,
+    firebaseClient,
+    currentUser
   ]);
 
   const applyCustomTemplateText = (nextText: string, source: string) => {
@@ -503,6 +1101,78 @@ export default function Home() {
     setCustomTemplateText(normalized);
     setCustomTemplateSource(source);
     setCustomTemplateProfileNotes([]);
+    loadedCustomConfigHashRef.current = "";
+  };
+
+  const handleLoadSavedCustomTemplate = (record: SavedCustomTemplate) => {
+    if (!record.templateText.trim()) {
+      setError("Selected saved custom template is empty.");
+      return;
+    }
+    setTemplateId(CUSTOM_TEMPLATE_ID);
+    setActiveCustomTemplateId(record.id);
+    setCustomTemplateLabel(record.name);
+    setCustomTemplateGender(record.gender);
+    setCustomTemplateMapping(sanitizeCustomTemplateMapping(record.mapping || {}));
+    setCustomTemplateProfile(record.profile);
+    setCustomTemplateProfileDraft(
+      record.profile ? JSON.stringify(record.profile, null, 2) : ""
+    );
+    applyCustomTemplateText(record.templateText, `saved template: ${record.name}`);
+    setError(null);
+  };
+
+  const handleSaveCurrentCustomTemplate = async () => {
+    if (!firebaseClient || !currentUser) {
+      setError("Sign in to save custom templates.");
+      return;
+    }
+    if (!customTemplateText.trim()) {
+      setError("Paste or upload template text before saving.");
+      return;
+    }
+    const templateHash = hashTemplateText(customTemplateText.trim());
+    const normalizedProfile = sanitizeTemplateProfile(customTemplateProfile || null, {
+      templateHash
+    });
+    const saveId =
+      activeCustomTemplateId ||
+      doc(collection(firebaseClient.db, `users/${currentUser.uid}/savedCustomTemplates`)).id;
+    const name =
+      customTemplateLabel.trim() ||
+      `Custom Template ${new Date().toLocaleDateString()}`;
+    try {
+      const isExisting = Boolean(activeCustomTemplateId);
+      await setDoc(
+        doc(
+          firebaseClient.db,
+          `users/${currentUser.uid}/savedCustomTemplates/${saveId}`
+        ),
+        {
+          name,
+          templateText: customTemplateText.trim(),
+          templateHash,
+          gender: customTemplateGender,
+          mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
+          profile: normalizedProfile,
+          canonicalFieldIds: normalizedProfile?.fields?.map((field) => field.id) || [],
+          sectionIds: normalizedProfile?.sections?.map((section) => section.id) || [],
+          useCount: activeCustomTemplateId
+            ? (savedCustomTemplates.find((item) => item.id === saveId)?.useCount || 0)
+            : 0,
+          lastUsedAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          ...(isExisting ? {} : { createdAt: serverTimestamp() })
+        },
+        { merge: true }
+      );
+      setActiveCustomTemplateId(saveId);
+      setCustomTemplateLabel(name);
+      setCustomTemplateSource(`saved template: ${name}`);
+      setError(null);
+    } catch (saveError) {
+      setError(firebaseErrorMessage(saveError));
+    }
   };
 
   const handleAutoMapCustomTemplate = () => {
@@ -626,7 +1296,10 @@ export default function Home() {
 
   const resetAudio = () => {
     generateAfterStopRef.current = false;
+    loadedSavedAudioReportIdRef.current = "";
     if (isRecording) stopRecording();
+    setIsRecordingPaused(false);
+    recordingStartMsRef.current = null;
     if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
     audioUrlRef.current = null;
     setAudioUrl(null);
@@ -634,6 +1307,30 @@ export default function Home() {
     setAudioDuration(null);
     setElapsedSeconds(0);
     setError(null);
+  };
+
+  const handleSelectTemplate = (nextTemplateId: string) => {
+    setTemplateId(nextTemplateId);
+    setActiveReportId("");
+    loadedCustomConfigHashRef.current = "";
+    setObservations("");
+    setRawJson("");
+    setFlags([]);
+    setDisclaimer("");
+  };
+
+  const startNewReportSession = () => {
+    setAllowRecordingFromReport(true);
+    loadedSavedAudioReportIdRef.current = "";
+    setActiveReportId("");
+    setAudioFile(null);
+    setAudioDuration(null);
+    setAudioUrl(null);
+    setObservations("");
+    setRawJson("");
+    setFlags([]);
+    setDisclaimer("");
+    setActiveView("recording");
   };
 
   const applyAudioFile = async (file: File) => {
@@ -653,6 +1350,7 @@ export default function Home() {
       setAudioUrl(url);
       setAudioFile(file);
       setAudioDuration(duration);
+      setDetectedMicLabel("Uploaded audio");
       setError(null);
       return true;
     } catch (audioError) {
@@ -660,6 +1358,447 @@ export default function Home() {
       setError((audioError as Error).message);
       return false;
     }
+  };
+
+  const loadSavedAudioForReport = async (report: ReportRecord | null) => {
+    if (!report) {
+      setError("No report is selected for audio restore.");
+      return false;
+    }
+    const cachedAudio = reportAudioCacheRef.current[report.id];
+    if (!cachedAudio && !report.audioDownloadUrl && !report.audioStoragePath) {
+      setError("No previously saved recording exists for this report.");
+      return false;
+    }
+    if (loadedSavedAudioReportIdRef.current === report.id && audioFile) return true;
+
+    setIsLoadingSavedAudio(true);
+    try {
+      if (cachedAudio) {
+        const appliedCached = await applyAudioFile(cachedAudio);
+        if (appliedCached) {
+          loadedSavedAudioReportIdRef.current = report.id;
+          return true;
+        }
+      }
+
+      const fetchAudioThroughProxy = async (downloadUrl: string) => {
+        const response = await fetch("/api/audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ audioDownloadUrl: downloadUrl })
+        });
+        if (!response.ok) {
+          let message = `Audio proxy failed (${response.status})`;
+          try {
+            const payload = (await response.json()) as Record<string, unknown>;
+            if (typeof payload.error === "string" && payload.error.trim()) {
+              message = payload.error.trim();
+            }
+          } catch {
+            // Keep status-based fallback message.
+          }
+          throw new Error(message);
+        }
+        return response.blob();
+      };
+
+      let blob: Blob | null = null;
+      let loadError: unknown = null;
+
+      // Prefer persisted download URL through same-origin API proxy (avoids browser CORS).
+      if (report.audioDownloadUrl) {
+        try {
+          blob = await fetchAudioThroughProxy(report.audioDownloadUrl);
+        } catch (proxyError) {
+          loadError = proxyError;
+        }
+      }
+
+      // Fallback: derive a fresh download URL from storage path, then proxy it.
+      if (!blob && firebaseClient && report.audioStoragePath) {
+        try {
+          const freshUrl = await getDownloadURL(
+            storageRef(firebaseClient.storage, report.audioStoragePath)
+          );
+          blob = await fetchAudioThroughProxy(freshUrl);
+        } catch (storagePathError) {
+          loadError = storagePathError;
+        }
+      }
+
+      if (!blob || !blob.size) {
+        if (loadError) throw loadError;
+        throw new Error("Saved recording is unavailable or empty.");
+      }
+      const fallbackExt = (blob.type.split("/")[1] || "webm").split(";")[0];
+      const file = new File(
+        [blob],
+        report.audioName || `saved-recording-${report.id}.${fallbackExt}`,
+        { type: report.audioType || blob.type || "audio/webm" }
+      );
+      reportAudioCacheRef.current[report.id] = file;
+      const applied = await applyAudioFile(file);
+      if (!applied) return false;
+      loadedSavedAudioReportIdRef.current = report.id;
+      return true;
+    } catch (loadError) {
+      setError(storageAudioLoadErrorMessage(loadError));
+      return false;
+    } finally {
+      setIsLoadingSavedAudio(false);
+    }
+  };
+
+  const handleAuthSubmit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!firebaseClient) {
+      setError(
+        "Firebase is not configured. Add NEXT_PUBLIC_FIREBASE_* environment variables."
+      );
+      return;
+    }
+    if (!authEmail.trim() || !authPassword.trim()) {
+      setError("Email and password are required.");
+      return;
+    }
+    setIsAuthLoading(true);
+    setError(null);
+    try {
+      if (authMode === "signup") {
+        const created = await createUserWithEmailAndPassword(
+          firebaseClient.auth,
+          authEmail.trim(),
+          authPassword
+        );
+        const displayName = authName.trim() || authEmail.trim().split("@")[0];
+        if (displayName) {
+          await updateProfile(created.user, { displayName });
+        }
+      } else {
+        await signInWithEmailAndPassword(
+          firebaseClient.auth,
+          authEmail.trim(),
+          authPassword
+        );
+      }
+      setAuthPassword("");
+    } catch (authError) {
+      setError(firebaseErrorMessage(authError));
+    } finally {
+      setIsAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    if (!firebaseClient) return;
+    try {
+      await signOut(firebaseClient.auth);
+      setAllowRecordingFromReport(false);
+      setTemplateId("");
+      setAudioFile(null);
+      setObservations("");
+      setRawJson("");
+      setFlags([]);
+      setDisclaimer("");
+      setSavedCustomTemplates([]);
+      setCustomTemplateLabel("");
+      setActiveCustomTemplateId("");
+      reportAudioCacheRef.current = {};
+      setWorklistStatusFilter("all");
+      setSearchQuery("");
+      setActiveView("dashboard");
+    } catch (signOutError) {
+      setError(firebaseErrorMessage(signOutError));
+    }
+  };
+
+  const openReportFromWorklist = (report: ReportRecord) => {
+    const allowReRecord = report.status === "pending_review" || report.status === "draft";
+    const hasSavedAudio =
+      Boolean(report.audioDownloadUrl) ||
+      Boolean(report.audioStoragePath) ||
+      Boolean(reportAudioCacheRef.current[report.id]);
+    setAllowRecordingFromReport(allowReRecord);
+    loadedSavedAudioReportIdRef.current = "";
+    setActiveReportId(report.id);
+    setTemplateId(report.templateId);
+    setObservations(report.observationsHtml || formatReportHtml(report.observationsText, report.templateId));
+    setFlags(report.flags || []);
+    setDisclaimer(report.disclaimer || "");
+    setRawJson(report.rawJson || "");
+    setAudioFile(null);
+    setAudioDuration(report.audioDurationSec || null);
+    setAudioUrl(null);
+    if (hasSavedAudio) {
+      if (allowReRecord) {
+        void loadSavedAudioForReport(report);
+      } else {
+        void (async () => {
+          const loaded = await loadSavedAudioForReport(report);
+          // Completed/non-pending reports should allow playback, not regenerate from loaded audio.
+          if (loaded) setAudioFile(null);
+        })();
+      }
+    }
+
+    if (report.templateId === CUSTOM_TEMPLATE_ID && report.customTemplateText.trim()) {
+      const templateHash = hashTemplateText(report.customTemplateText.trim());
+      const linkedSavedTemplate = savedCustomTemplates.find(
+        (item) => item.templateHash === templateHash
+      );
+      setActiveCustomTemplateId(linkedSavedTemplate?.id || "");
+      setCustomTemplateLabel(linkedSavedTemplate?.name || "");
+      setCustomTemplateText(report.customTemplateText);
+      setCustomTemplateSource("firebase");
+      setCustomTemplateGender(report.customTemplateGender || "male");
+      try {
+        const mappingParsed = JSON.parse(report.customTemplateMappingJson || "{}");
+        setCustomTemplateMapping(sanitizeCustomTemplateMapping(mappingParsed));
+      } catch {
+        setCustomTemplateMapping({});
+      }
+      const sanitized = sanitizeTemplateProfile(report.customTemplateProfileJson || null, {
+        templateHash
+      });
+      setCustomTemplateProfile(sanitized);
+      setCustomTemplateProfileDraft(sanitized ? JSON.stringify(sanitized, null, 2) : "");
+    }
+
+    setActiveView("report");
+  };
+
+  const persistReport = async (params: {
+    reportId?: string;
+    status: ReportStatus;
+    sourceAudio?: File | null;
+    observationsHtml: string;
+    observationsText: string;
+    generationMs?: number;
+    rawPayloadJson: string;
+    flagList: string[];
+    disclaimerText: string;
+  }) => {
+    if (!firebaseClient || !currentUser || !templateId) return "";
+    setIsSavingReport(true);
+    const reportId =
+      params.reportId ||
+      activeReportId ||
+      doc(collection(firebaseClient.db, `users/${currentUser.uid}/reports`)).id;
+
+    try {
+      const counterRef = doc(
+        firebaseClient.db,
+        `users/${currentUser.uid}/meta/counters`
+      );
+      const allocateNextPatientId = async () => {
+        const nextId = await runTransaction(firebaseClient.db, async (tx) => {
+          const counterSnap = await tx.get(counterRef);
+          const counterData = counterSnap.data() as Record<string, unknown> | undefined;
+          const storedNext = Number(counterData?.nextPatientId || 0);
+          const nextPatientId =
+            Number.isFinite(storedNext) && storedNext >= 1000
+              ? Math.floor(storedNext)
+              : nextPatientIdSeed;
+          tx.set(
+            counterRef,
+            { nextPatientId: nextPatientId + 1, updatedAt: serverTimestamp() },
+            { merge: true }
+          );
+          return nextPatientId;
+        });
+        return String(nextId);
+      };
+
+      let audioStoragePath = activeReport?.audioStoragePath || "";
+      let audioDownloadUrl = activeReport?.audioDownloadUrl || "";
+      const sourceAudio = params.sourceAudio || null;
+      if (sourceAudio) {
+        audioStoragePath = `users/${currentUser.uid}/recordings/${reportId}-${Date.now()}-${fileNameSafe(
+          sourceAudio.name
+        )}`;
+        const targetRef = storageRef(firebaseClient.storage, audioStoragePath);
+        await uploadBytes(targetRef, sourceAudio, {
+          contentType: sourceAudio.type || "audio/webm"
+        });
+        audioDownloadUrl = await getDownloadURL(targetRef);
+      }
+
+      const patientMeta = parsePatientFromReport(params.observationsText);
+      const reportRef = doc(
+        firebaseClient.db,
+        `users/${currentUser.uid}/reports/${reportId}`
+      );
+      const existingSnap = await getDoc(reportRef);
+      const existingData = existingSnap.data() as Record<string, unknown> | undefined;
+      const existingPatientId = String(
+        activeReport?.patientId || existingData?.patientId || ""
+      ).trim();
+      const resolvedPatientId =
+        existingPatientId || (await allocateNextPatientId());
+      const existingGeneratedAtMs = parseTimestampToMillis(existingData?.generatedAt);
+      const resolvedGeneratedAtMs =
+        activeReport?.generatedAtMs || existingGeneratedAtMs || Date.now();
+      await setDoc(
+        reportRef,
+        {
+          templateId,
+          templateTitle: selectedTemplate?.title || templateId,
+          patientName: patientMeta.patientName,
+          patientGender: patientMeta.patientGender,
+          patientDate: patientMeta.patientDate,
+          patientId: resolvedPatientId,
+          accession: activeReport?.accession || randomAccessionId(),
+          status: params.status,
+          observationsHtml: params.observationsHtml,
+          observationsText: params.observationsText,
+          rawJson: params.rawPayloadJson,
+          flags: params.flagList,
+          disclaimer: params.disclaimerText,
+          audioName: sourceAudio?.name || activeReport?.audioName || "",
+          audioSize: sourceAudio?.size || activeReport?.audioSize || 0,
+          audioType: sourceAudio?.type || activeReport?.audioType || "",
+          audioDurationSec:
+            audioDuration || activeReport?.audioDurationSec || 0,
+          audioStoragePath,
+          audioDownloadUrl,
+          generationMs: params.generationMs || activeReport?.generationMs || 0,
+          generatedAt: new Date(resolvedGeneratedAtMs),
+          customTemplateText: isCustomTemplateMode ? customTemplateText : "",
+          customTemplateGender: isCustomTemplateMode
+            ? customTemplateGender
+            : "male",
+          customTemplateMappingJson: isCustomTemplateMode
+            ? JSON.stringify(customTemplateMapping)
+            : "",
+          customTemplateProfileJson:
+            isCustomTemplateMode && customTemplateProfile
+              ? JSON.stringify(customTemplateProfile)
+              : "",
+          updatedAt: serverTimestamp(),
+          createdAt: activeReport?.createdAtMs
+            ? new Date(activeReport.createdAtMs)
+            : serverTimestamp()
+        },
+        { merge: true }
+      );
+
+      if (isCustomTemplateMode && customTemplateText.trim()) {
+        const templateHash = hashTemplateText(customTemplateText.trim());
+        const normalizedProfile = sanitizeTemplateProfile(customTemplateProfile || null, {
+          templateHash
+        });
+        const autoTemplateId = activeCustomTemplateId || templateHash;
+        const existingSaved = savedCustomTemplates.find(
+          (item) => item.id === autoTemplateId || item.templateHash === templateHash
+        );
+        const resolvedTemplateId = existingSaved?.id || autoTemplateId;
+        const resolvedName =
+          customTemplateLabel.trim() ||
+          existingSaved?.name ||
+          `Custom Template ${new Date().toLocaleDateString()}`;
+        await setDoc(
+          doc(
+            firebaseClient.db,
+            `users/${currentUser.uid}/savedCustomTemplates/${resolvedTemplateId}`
+          ),
+          {
+            name: resolvedName,
+            templateText: customTemplateText.trim(),
+            templateHash,
+            gender: customTemplateGender,
+            mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
+            profile: normalizedProfile,
+            canonicalFieldIds: normalizedProfile?.fields?.map((field) => field.id) || [],
+            sectionIds: normalizedProfile?.sections?.map((section) => section.id) || [],
+            lastUsedAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+            useCount: increment(1),
+            ...(existingSaved ? {} : { createdAt: serverTimestamp() })
+          },
+          { merge: true }
+        );
+        setActiveCustomTemplateId(resolvedTemplateId);
+      }
+
+      if (sourceAudio) {
+        reportAudioCacheRef.current[reportId] = sourceAudio;
+      }
+      setActiveReportId(reportId);
+      return reportId;
+    } catch (persistError) {
+      setError(firebaseErrorMessage(persistError));
+      return "";
+    } finally {
+      setIsSavingReport(false);
+    }
+  };
+
+  const handleFinalizeReport = async () => {
+    if (!hasObservations) {
+      setError("Generate a report before finalizing.");
+      return;
+    }
+    if (!firebaseClient || !currentUser) {
+      setActiveView("dashboard");
+      return;
+    }
+    await persistReport({
+      reportId: activeReportId || undefined,
+      status: "completed",
+      observationsHtml: observations,
+      observationsText: observationsPlain,
+      rawPayloadJson: rawJson,
+      flagList: flags,
+      disclaimerText: disclaimer
+    });
+    setAllowRecordingFromReport(false);
+    setActiveReportId("");
+    setActiveView("dashboard");
+  };
+
+  const handleMarkDraft = async () => {
+    if (!hasObservations) {
+      setError("Generate a report before saving as draft.");
+      return;
+    }
+    if (!firebaseClient || !currentUser) {
+      return;
+    }
+    await persistReport({
+      reportId: activeReportId || undefined,
+      status: "draft",
+      observationsHtml: observations,
+      observationsText: observationsPlain,
+      rawPayloadJson: rawJson,
+      flagList: flags,
+      disclaimerText: disclaimer
+    });
+    setAllowRecordingFromReport(false);
+    setActiveReportId("");
+    setActiveView("dashboard");
+  };
+
+  const handleDiscardReport = async () => {
+    if (!firebaseClient || !currentUser) {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Discard this report? It will be removed from your worklist and cannot be undone."
+    );
+    if (!confirmed) return;
+    await persistReport({
+      reportId: activeReportId || undefined,
+      status: "discarded",
+      observationsHtml: observations,
+      observationsText: observationsPlain,
+      rawPayloadJson: rawJson,
+      flagList: flags,
+      disclaimerText: disclaimer
+    });
+    setAllowRecordingFromReport(false);
+    setActiveReportId("");
+    setActiveView("dashboard");
   };
 
   const handleGenerate = async (audioOverride?: File | null) => {
@@ -683,6 +1822,7 @@ export default function Home() {
 
     setIsGenerating(true);
     setError(null);
+    const generationStartMs = Date.now();
 
     try {
       const formData = new FormData();
@@ -704,32 +1844,81 @@ export default function Home() {
       }
 
       const response = await fetch(API_ENDPOINT, { method: "POST", body: formData });
-      const payload = await response.json();
+      const rawResponse = await response.text();
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = rawResponse ? (JSON.parse(rawResponse) as Record<string, unknown>) : {};
+      } catch {
+        throw new Error(
+          response.ok
+            ? "Server returned invalid JSON. Please retry."
+            : `Generation failed (${response.status}). Server returned non-JSON response.`
+        );
+      }
 
-      if (!response.ok) throw new Error(payload?.error || "Generation failed.");
+      if (!response.ok) {
+        const apiError =
+          typeof payload.error === "string" && payload.error.trim()
+            ? payload.error
+            : "Generation failed.";
+        throw new Error(apiError);
+      }
 
       const observationsText = String(payload.observations || "");
-      setObservations(formatReportHtml(observationsText, templateId));
-      setFlags(Array.isArray(payload.flags) ? payload.flags : []);
-      setDisclaimer(String(payload.disclaimer || ""));
+      const observationsHtml = formatReportHtml(observationsText, templateId);
+      const nextFlags = Array.isArray(payload.flags) ? payload.flags : [];
+      const nextDisclaimer = String(payload.disclaimer || "");
+      const rawPayloadJson = JSON.stringify(payload, null, 2);
+
+      setObservations(observationsHtml);
+      setFlags(nextFlags);
+      setDisclaimer(nextDisclaimer);
+      const profileFeedback =
+        payload.profile_feedback && typeof payload.profile_feedback === "object"
+          ? (payload.profile_feedback as Record<string, unknown>)
+          : null;
       if (
         isCustomTemplateMode &&
-        Array.isArray(payload?.profile_feedback?.unmapped_findings)
+        Array.isArray(profileFeedback?.unmapped_findings)
       ) {
         recordUnmappedFindingsLearning({
           templateText: customTemplateText,
-          findings: payload.profile_feedback.unmapped_findings.map((item: unknown) =>
+          findings: profileFeedback.unmapped_findings.map((item: unknown) =>
             String(item || "")
           )
         });
       }
-      setRawJson(JSON.stringify(payload, null, 2));
+      setRawJson(rawPayloadJson);
+
+      await persistReport({
+        reportId: activeReportId || undefined,
+        status: "pending_review",
+        sourceAudio,
+        observationsHtml,
+        observationsText,
+        generationMs: Date.now() - generationStartMs,
+        rawPayloadJson,
+        flagList: nextFlags,
+        disclaimerText: nextDisclaimer
+      });
+      setAllowRecordingFromReport(true);
       setActiveView("report");
     } catch (generateError) {
       setError((generateError as Error).message);
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const startElapsedTimer = (elapsedAtStart: number) => {
+    recordingStartMsRef.current = Date.now() - elapsedAtStart * 1000;
+    if (timerRef.current) window.clearInterval(timerRef.current);
+    timerRef.current = window.setInterval(() => {
+      const startMs = recordingStartMsRef.current;
+      if (!startMs) return;
+      const elapsed = Math.floor((Date.now() - startMs) / 1000);
+      setElapsedSeconds(elapsed);
+    }, 1000);
   };
 
   const startRecording = async () => {
@@ -742,6 +1931,25 @@ export default function Home() {
 
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const primaryTrack = stream.getAudioTracks()[0];
+      if (primaryTrack) {
+        const nextMicLabel = primaryTrack.label?.trim() || "Default microphone";
+        setDetectedMicLabel(nextMicLabel);
+      }
+      try {
+        const AudioContextCtor =
+          window.AudioContext ||
+          (window as unknown as { webkitAudioContext?: typeof AudioContext })
+            .webkitAudioContext;
+        if (AudioContextCtor) {
+          const context = new AudioContextCtor();
+          const baseLatencyMs = Math.round((context.baseLatency || 0) * 1000);
+          setInputLatencyMs(baseLatencyMs > 0 && Number.isFinite(baseLatencyMs) ? baseLatencyMs : null);
+          await context.close();
+        }
+      } catch {
+        setInputLatencyMs(null);
+      }
       const mimeType = pickSupportedMimeType();
       const options: MediaRecorderOptions = { audioBitsPerSecond: TARGET_AUDIO_BITRATE };
       if (mimeType) options.mimeType = mimeType;
@@ -756,6 +1964,7 @@ export default function Home() {
       recorderRef.current = recorder;
       chunksRef.current = [];
       recordedBytesRef.current = 0;
+      setIsRecordingPaused(false);
       setElapsedSeconds(0);
 
       recorder.ondataavailable = (event) => {
@@ -788,7 +1997,6 @@ export default function Home() {
         if (generateAfterStopRef.current) {
           generateAfterStopRef.current = false;
           if (applied) {
-            setActiveView("report");
             await handleGenerate(file);
           }
         }
@@ -796,14 +2004,36 @@ export default function Home() {
 
       recorder.start(1000);
       setIsRecording(true);
-      const startTime = Date.now();
-      if (timerRef.current) window.clearInterval(timerRef.current);
-      timerRef.current = window.setInterval(() => {
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
-        setElapsedSeconds(elapsed);
-      }, 1000);
+      startElapsedTimer(0);
     } catch (recordError) {
       setError((recordError as Error).message);
+    }
+  };
+
+  const pauseRecording = () => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state !== "recording") return;
+    try {
+      recorder.pause();
+      setIsRecordingPaused(true);
+      if (timerRef.current) {
+        window.clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    } catch {
+      // ignore pause failures from unsupported browser implementations
+    }
+  };
+
+  const resumeRecording = () => {
+    const recorder = recorderRef.current;
+    if (!recorder || recorder.state !== "paused") return;
+    try {
+      recorder.resume();
+      setIsRecordingPaused(false);
+      startElapsedTimer(elapsedSeconds);
+    } catch {
+      // ignore resume failures from unsupported browser implementations
     }
   };
 
@@ -811,10 +2041,13 @@ export default function Home() {
     const recorder = recorderRef.current;
     if (!recorder || recorder.state === "inactive") {
       setIsRecording(false);
+      setIsRecordingPaused(false);
       return;
     }
     recorder.stop();
     setIsRecording(false);
+    setIsRecordingPaused(false);
+    recordingStartMsRef.current = null;
     if (timerRef.current) {
       window.clearInterval(timerRef.current);
       timerRef.current = null;
@@ -831,7 +2064,6 @@ export default function Home() {
       setError("Record or upload audio before processing.");
       return;
     }
-    setActiveView("report");
     await handleGenerate(audioFile);
   };
 
@@ -885,41 +2117,189 @@ export default function Home() {
     !isCustomTemplateMode || Boolean(customTemplateProfile?.approved);
   const canGoRecording =
     Boolean(templateId) && customTemplateReady && customTemplateProfileReady;
-  const canGoReport = Boolean(audioFile);
+  const canGoReport = Boolean(audioFile || activeReportId || observationsPlain.trim());
   const canProcessAudio =
     Boolean(templateId) && customTemplateReady && customTemplateProfileReady;
-  const recordingTime = isRecording ? elapsedSeconds : audioDuration || elapsedSeconds;
+  const safeAudioDuration =
+    typeof audioDuration === "number" && Number.isFinite(audioDuration) && audioDuration >= 0
+      ? audioDuration
+      : null;
+  const recordingTime = isRecording ? elapsedSeconds : safeAudioDuration ?? elapsedSeconds;
+  const showStopAndProcess = isRecording || Boolean(audioFile);
+  const baseCompletedTopics = audioFile
+    ? Math.min(2, recordingSidebarTopics.length)
+    : isRecording
+      ? 1
+      : 0;
+  const completedTopics = isGenerating
+    ? Math.max(baseCompletedTopics, processingTopicProgress)
+    : baseCompletedTopics;
+  const isCompletedReportView = activeReportStatus === "completed";
+  const goToRecordingFromReport = () => {
+    if (isCompletedReportView || !allowRecordingFromReport) return;
+    setActiveView("recording");
+    if (!audioFile) {
+      void loadSavedAudioForReport(activeReport);
+    }
+  };
+  const goToRecordingForReRecord = () => {
+    if (isCompletedReportView || !allowRecordingFromReport) return;
+    resetAudio();
+    setActiveView("recording");
+  };
+  const canStartNewFromDashboard = canGoRecording;
+  const canResumeReportFromDashboard =
+    Boolean(activeReportId) &&
+    (activeReportStatus === "pending_review" ||
+      activeReportStatus === "draft" ||
+      (!activeReportStatus && allowRecordingFromReport));
+  const errorToast = error ? (
+    <div className="floating-error">
+      <div className="flex items-start gap-3">
+        <p className="flex-1">{error}</p>
+        <button
+          type="button"
+          aria-label="Dismiss error"
+          className="rounded px-1 text-base leading-none text-red-500 hover:bg-red-50 hover:text-red-700"
+          onClick={() => setError(null)}
+        >
+          ×
+        </button>
+      </div>
+    </div>
+  ) : null;
+
+  if (isFirebaseClientConfigured && !authReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background-light dark:bg-background-dark">
+        <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-sm font-semibold text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
+          Connecting to Firebase...
+        </div>
+      </div>
+    );
+  }
+
+  if (isFirebaseClientConfigured && !currentUser) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background-light px-4 dark:bg-background-dark">
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
+          <div className="mb-5 text-center">
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">altrixa.ai</h1>
+            <p className="mt-1 text-sm text-slate-500">
+              Sign in to access your templates, reports, and recordings.
+            </p>
+          </div>
+          <form className="space-y-3" onSubmit={handleAuthSubmit}>
+            {authMode === "signup" && (
+              <div>
+                <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
+                  Doctor Name
+                </label>
+                <input
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  value={authName}
+                  onChange={(event) => setAuthName(event.target.value)}
+                  placeholder="Dr. Name"
+                />
+              </div>
+            )}
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
+                Email
+              </label>
+              <input
+                type="email"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                value={authEmail}
+                onChange={(event) => setAuthEmail(event.target.value)}
+                placeholder="doctor@hospital.com"
+                required
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
+                Password
+              </label>
+              <input
+                type="password"
+                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                value={authPassword}
+                onChange={(event) => setAuthPassword(event.target.value)}
+                placeholder="••••••••"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isAuthLoading}
+              className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isAuthLoading
+                ? "Please wait..."
+                : authMode === "signup"
+                  ? "Create Account"
+                  : "Sign In"}
+            </button>
+          </form>
+          <button
+            type="button"
+            className="mt-3 w-full text-sm font-medium text-primary hover:underline"
+            onClick={() => setAuthMode((current) => (current === "signin" ? "signup" : "signin"))}
+          >
+            {authMode === "signin"
+              ? "New doctor? Create account"
+              : "Already registered? Sign in"}
+          </button>
+        </div>
+        {errorToast}
+      </div>
+    );
+  }
 
   if (activeView === "dashboard") {
     return (
       <div className="flex h-screen overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-800 dark:text-slate-200">
-        <aside className="hidden w-64 flex-col border-r border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-900 lg:flex">
-          <div className="p-6">
+        <aside
+          className={`hidden ${sidebarWidthClass} flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
+        >
+          <div className="flex items-center justify-between p-4">
             <div className="flex items-center gap-2 text-primary">
               <span className="material-icons-round text-3xl">analytics</span>
-              <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+              {!isSidebarCollapsed && (
+                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+              )}
             </div>
+            <button
+              type="button"
+              className="rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={() => setIsSidebarCollapsed((current) => !current)}
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <span className="material-icons-round text-base">
+                {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+              </span>
+            </button>
           </div>
           <nav className="flex-1 space-y-1 px-3">
             <button className="sidebar-item-active flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium transition-colors">
               <span className="material-icons-round">dashboard</span>
-              Dashboard
+              {!isSidebarCollapsed && "Dashboard"}
             </button>
             <button
               className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canGoRecording && setActiveView("recording")}
-              disabled={!canGoRecording}
+              onClick={() => canStartNewFromDashboard && startNewReportSession()}
+              disabled={!canStartNewFromDashboard}
             >
               <span className="material-icons-round">mic</span>
-              Recording
+              {!isSidebarCollapsed && "Recording"}
             </button>
             <button
               className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canGoReport && setActiveView("report")}
-              disabled={!canGoReport}
+              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+              disabled={!canResumeReportFromDashboard}
             >
               <span className="material-icons-round">edit_note</span>
-              Report Editor
+              {!isSidebarCollapsed && "Report Editor"}
             </button>
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
@@ -929,22 +2309,36 @@ export default function Home() {
                 alt="Radiologist"
                 src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
               />
-              <div className="overflow-hidden">
-                <p className="truncate text-sm font-semibold">Dr. Julian Vance</p>
-                <p className="truncate text-xs text-slate-500">Senior Radiologist</p>
-              </div>
+              {!isSidebarCollapsed && (
+                <div className="overflow-hidden">
+                  <p className="truncate text-sm font-semibold">{doctorName}</p>
+                  <p className="truncate text-xs text-slate-500">
+                    {doctorProfile?.role || "Radiologist"}
+                  </p>
+                </div>
+              )}
             </div>
+            {!isSidebarCollapsed && currentUser && (
+              <button
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </button>
+            )}
           </div>
         </aside>
 
         <main className="flex-1 overflow-y-auto">
           <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80 md:px-8">
-            <div className="flex w-full items-center gap-4 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 dark:border-slate-700 dark:bg-slate-800 md:max-w-96">
+            <div className="flex w-full items-center gap-4 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/25 dark:border-slate-700 dark:bg-slate-800 md:max-w-96">
               <span className="material-icons-round text-slate-400">search</span>
               <input
-                className="w-full border-none bg-transparent p-0 text-sm focus:ring-0"
+                className="dashboard-search-input w-full border-none bg-transparent p-0 text-sm focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
                 placeholder="Search Patient ID, Name, or Accession #"
                 type="text"
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
             <div className="ml-4 hidden items-center gap-6 md:flex">
@@ -963,7 +2357,7 @@ export default function Home() {
             <section className="mb-10 flex flex-col items-start justify-between gap-6 md:flex-row md:items-center">
               <div>
                 <h1 className="text-3xl font-bold tracking-tight text-slate-900 dark:text-white">
-                  Welcome back, Dr. Vance
+                  Welcome back, {doctorName}
                 </h1>
                 <p className="mt-1 text-slate-500">
                   Select a template card to begin. The exact Stitch workflow is now connected.
@@ -972,57 +2366,68 @@ export default function Home() {
               <button
                 className="hidden items-center gap-3 rounded-xl bg-primary px-6 py-3 font-semibold text-white shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 md:flex"
                 disabled={!canGoRecording}
-                onClick={() => setActiveView("recording")}
+                onClick={startNewReportSession}
               >
                 <span className="material-icons-round">add_circle</span>
                 Start New Report
               </button>
             </section>
 
-            <div className="mb-10 grid grid-cols-1 gap-6 md:grid-cols-4">
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Completed Today</p>
-                <div className="mt-2 flex items-end justify-between">
-                  <h2 className="text-2xl font-bold">24</h2>
-                  <span className="text-xs font-medium text-green-500">+12% vs avg</span>
+            {!isSearchMode && (
+              <div className="mb-10 grid grid-cols-1 gap-6 md:grid-cols-4">
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Completed Today</p>
+                  <div className="mt-2 flex items-end justify-between">
+                    <h2 className="text-2xl font-bold">{dashboardStats.completedToday}</h2>
+                    <span className="text-xs font-medium text-green-500">Live from Firebase</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Avg. Turnaround</p>
+                  <div className="mt-2 flex items-end justify-between">
+                    <h2 className="text-2xl font-bold">{dashboardStats.avgTurnaroundMin || 0}m</h2>
+                    <span className="text-xs font-medium text-primary">from generated reports</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Pending Sign-off</p>
+                  <div className="mt-2 flex items-end justify-between">
+                    <h2 className="text-2xl font-bold text-orange-500">{dashboardStats.pendingSignoff}</h2>
+                    <span className="text-xs text-slate-400">Priority</span>
+                  </div>
+                </div>
+                <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">AI Accuracy</p>
+                  <div className="mt-2 flex items-end justify-between">
+                    <h2 className="text-2xl font-bold">{dashboardStats.aiAccuracyPct}%</h2>
+                    <span className="material-icons-round text-lg text-blue-400">verified</span>
+                  </div>
                 </div>
               </div>
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Avg. Turnaround</p>
-                <div className="mt-2 flex items-end justify-between">
-                  <h2 className="text-2xl font-bold">18m</h2>
-                  <span className="text-xs font-medium text-primary">-4m with AI</span>
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Pending Sign-off</p>
-                <div className="mt-2 flex items-end justify-between">
-                  <h2 className="text-2xl font-bold text-orange-500">8</h2>
-                  <span className="text-xs text-slate-400">Priority</span>
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900">
-                <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">AI Accuracy</p>
-                <div className="mt-2 flex items-end justify-between">
-                  <h2 className="text-2xl font-bold">98.2%</h2>
-                  <span className="material-icons-round text-lg text-blue-400">verified</span>
-                </div>
-              </div>
-            </div>
+            )}
 
-            <section className="mb-10">
+            {!isSearchMode && (
+              <section className="mb-10">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-bold text-slate-900 dark:text-white">Quick Templates</h2>
-                <button className="text-sm font-semibold text-primary hover:underline">Manage All</button>
+                <button
+                  className="text-sm font-semibold text-primary hover:underline"
+                  onClick={() => setIsManageTemplatesOpen((current) => !current)}
+                  type="button"
+                >
+                  {isManageTemplatesOpen ? "Close All" : "Manage All"}
+                </button>
               </div>
               <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                {templates.map((template, index) => {
+                {visibleQuickTemplates.map((template, index) => {
                   const visual = TEMPLATE_VISUALS[index % TEMPLATE_VISUALS.length];
                   const isSelected = template.id === templateId;
+                  const recentRank = recentTemplateIds.indexOf(template.id);
+                  const isRecent = recentRank >= 0 && recentRank < 4;
                   return (
                     <button
                       key={template.id}
-                      onClick={() => setTemplateId(template.id)}
+                      onClick={() => handleSelectTemplate(template.id)}
                       className={`group rounded-xl border bg-white p-5 text-left shadow-sm transition-all dark:bg-slate-900 ${
                         isSelected
                           ? "scale-[1.02] border-primary ring-2 ring-primary/25 shadow-xl shadow-primary/20 dark:border-primary"
@@ -1045,6 +2450,11 @@ export default function Home() {
                             <span className="material-icons-round text-[12px]">check_circle</span>
                             Selected
                           </span>
+                        ) : isRecent ? (
+                          <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-1 text-[10px] font-bold uppercase text-green-700 dark:bg-green-900/30 dark:text-green-300">
+                            <span className="material-icons-round text-[12px]">history</span>
+                            Recent
+                          </span>
                         ) : (
                           <span className={`text-[10px] font-bold uppercase text-slate-400 ${visual.accent}`}>
                             {template.allowedTopics.length} Topics
@@ -1064,9 +2474,76 @@ export default function Home() {
                   );
                 })}
               </div>
-            </section>
+              {quickTemplates.length > 4 && (
+                <div className="mt-4">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setIsQuickTemplatesExpanded((current) => !current)
+                    }
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  >
+                    {isQuickTemplatesExpanded
+                      ? "Show Less Templates"
+                      : `Show More Templates (${quickTemplates.length - 4})`}
+                  </button>
+                </div>
+              )}
+              {isManageTemplatesOpen && (
+                <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                  <div className="border-b border-slate-200 bg-slate-50 px-4 py-3 text-xs font-bold uppercase tracking-wider text-slate-500 dark:border-slate-800 dark:bg-slate-800/50">
+                    All Templates
+                  </div>
+                  <div className="max-h-80 overflow-y-auto">
+                    {quickTemplates.map((template, index) => {
+                      const isSelected = template.id === templateId;
+                      const visual = TEMPLATE_VISUALS[index % TEMPLATE_VISUALS.length];
+                      return (
+                        <button
+                          key={`manage-${template.id}`}
+                          type="button"
+                          onClick={() => {
+                            handleSelectTemplate(template.id);
+                            setIsManageTemplatesOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 text-left transition-colors last:border-b-0 dark:border-slate-800 ${
+                            isSelected
+                              ? "bg-primary/10"
+                              : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                          }`}
+                        >
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span
+                              className={`flex h-8 w-8 items-center justify-center rounded-lg ${visual.iconWrap}`}
+                            >
+                              <span className="material-icons-round text-sm">{visual.icon}</span>
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                                {template.title}
+                              </p>
+                              <p className="truncate text-xs text-slate-500">
+                                {template.allowedTopics.slice(0, 3).join(", ")}
+                              </p>
+                            </div>
+                          </div>
+                          <span
+                            className={`text-xs font-bold uppercase ${
+                              isSelected ? "text-primary" : "text-slate-400"
+                            }`}
+                          >
+                            {isSelected ? "Selected" : "Use"}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              </section>
+            )}
 
-            {isCustomTemplateMode && (
+            {!isSearchMode && isCustomTemplateMode && (
               <section className="mb-10 rounded-2xl border border-primary/20 bg-white p-5 shadow-sm dark:border-primary/30 dark:bg-slate-900">
                 <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
                   <div>
@@ -1080,6 +2557,53 @@ export default function Home() {
                   <span className="rounded bg-primary/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-primary">
                     USG Custom
                   </span>
+                </div>
+
+                <div className="mb-4 grid grid-cols-1 gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800/40 lg:grid-cols-3">
+                  <label className="text-xs font-semibold text-slate-500 lg:col-span-1">
+                    Template Name
+                    <input
+                      value={customTemplateLabel}
+                      onChange={(event) => setCustomTemplateLabel(event.target.value)}
+                      placeholder="e.g. Dr Yash - Abdomen v1"
+                      className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    />
+                  </label>
+                  <div className="text-xs font-semibold text-slate-500 lg:col-span-1">
+                    Saved Templates
+                    <select
+                      value={activeCustomTemplateId}
+                      onChange={(event) => {
+                        const nextId = event.target.value;
+                        setActiveCustomTemplateId(nextId);
+                        const selected = savedCustomTemplates.find((item) => item.id === nextId);
+                        if (selected) {
+                          handleLoadSavedCustomTemplate(selected);
+                        }
+                      }}
+                      className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      <option value="">
+                        {isSavedCustomTemplatesLoading
+                          ? "Loading..."
+                          : "Select saved custom template"}
+                      </option>
+                      {savedCustomTemplates.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {item.name} ({item.useCount} uses)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-end gap-2 lg:col-span-1">
+                    <button
+                      onClick={handleSaveCurrentCustomTemplate}
+                      type="button"
+                      className="w-full rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90"
+                    >
+                      Save Current Template
+                    </button>
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -1275,18 +2799,71 @@ export default function Home() {
               </section>
             )}
 
-            <section>
+            {isSearchMode && (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3">
+                <p className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                  Search mode active: showing Active Worklist first for faster lookup.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setSearchQuery("")}
+                  className="rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  Clear Search
+                </button>
+              </div>
+            )}
+
+            <section ref={worklistSectionRef} tabIndex={-1} className="outline-none">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-bold text-slate-900 dark:text-white">Active Worklist</h2>
-                <div className="hidden gap-2 md:flex">
-                  <button className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium transition-colors hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-                    <span className="material-icons-round text-sm">filter_list</span>
-                    Filter
-                  </button>
-                  <button className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium transition-colors hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900">
-                    View All
-                  </button>
+                <div className="hidden items-center gap-2 md:flex">
+                  <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm font-medium text-slate-500 dark:border-slate-800 dark:bg-slate-900">
+                    {filteredReports.length} records
+                  </span>
                 </div>
+              </div>
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <button
+                  onClick={() => setWorklistStatusFilter("all")}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                    worklistStatusFilter === "all"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  }`}
+                >
+                  All ({worklistCounts.all})
+                </button>
+                <button
+                  onClick={() => setWorklistStatusFilter("draft")}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                    worklistStatusFilter === "draft"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  }`}
+                >
+                  Draft ({worklistCounts.draft})
+                </button>
+                <button
+                  onClick={() => setWorklistStatusFilter("pending_review")}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                    worklistStatusFilter === "pending_review"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  }`}
+                >
+                  Pending ({worklistCounts.pending_review})
+                </button>
+                <button
+                  onClick={() => setWorklistStatusFilter("completed")}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold ${
+                    worklistStatusFilter === "completed"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                  }`}
+                >
+                  Completed ({worklistCounts.completed})
+                </button>
               </div>
               <div className="hidden overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:block dark:border-slate-800 dark:bg-slate-900">
                 <table className="w-full border-collapse text-left">
@@ -1294,179 +2871,108 @@ export default function Home() {
                     <tr className="border-b border-slate-200 bg-slate-50 text-[10px] font-bold uppercase tracking-widest text-slate-500 dark:border-slate-800 dark:bg-slate-800/50">
                       <th className="px-6 py-4">Status</th>
                       <th className="px-6 py-4">Patient</th>
-                      <th className="px-6 py-4">Accession #</th>
+                      <th className="px-6 py-4">Generated</th>
                       <th className="px-6 py-4">Modality</th>
                       <th className="px-6 py-4 text-right">Actions</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    <tr className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2 py-1 text-xs font-semibold uppercase text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-                          In Progress
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="font-semibold text-slate-900 dark:text-white">Elena Rodriguez</div>
-                        <div className="text-xs text-slate-500">Age: 42 • ID: 882910</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm text-slate-600 dark:text-slate-400">ACC-44921-X</td>
-                      <td className="px-6 py-4">
-                        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium dark:bg-slate-800">Chest X-Ray</span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          className="rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary opacity-0 transition-opacity group-hover:opacity-100"
-                          onClick={() => {
-                            if (!templateId) setTemplateId("XRAY_CHEST");
-                            setActiveView("recording");
-                          }}
-                        >
-                          Resume Report
-                        </button>
-                      </td>
-                    </tr>
-                    <tr className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-orange-100 px-2 py-1 text-xs font-semibold uppercase text-orange-700 dark:bg-orange-900/30 dark:text-orange-400">
-                          Pending Review
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="font-semibold text-slate-900 dark:text-white">James McAvoy</div>
-                        <div className="text-xs text-slate-500">Age: 68 • ID: 110294</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm text-slate-600 dark:text-slate-400">ACC-44930-M</td>
-                      <td className="px-6 py-4">
-                        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium dark:bg-slate-800">Brain MRI</span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100"
-                          onClick={() => canGoReport && setActiveView("report")}
-                          disabled={!canGoReport}
-                        >
-                          Sign Off
-                        </button>
-                      </td>
-                    </tr>
-                    <tr className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30">
-                      <td className="px-6 py-4">
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-1 text-xs font-semibold uppercase text-slate-600 dark:bg-slate-800 dark:text-slate-400">
-                          Draft
-                        </span>
-                      </td>
-                      <td className="px-6 py-4">
-                        <div className="font-semibold text-slate-900 dark:text-white">Sarah Chen</div>
-                        <div className="text-xs text-slate-500">Age: 29 • ID: 339201</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-sm text-slate-600 dark:text-slate-400">ACC-44935-C</td>
-                      <td className="px-6 py-4">
-                        <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium dark:bg-slate-800">Abdominal CT</span>
-                      </td>
-                      <td className="px-6 py-4 text-right">
-                        <button
-                          className="rounded-lg bg-slate-200 px-3 py-1.5 text-xs font-bold text-slate-700 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-slate-700 dark:text-slate-200"
-                          onClick={() => canGoReport && setActiveView("report")}
-                          disabled={!canGoReport}
-                        >
-                          Edit Draft
-                        </button>
-                      </td>
-                    </tr>
+                    {isReportsLoading && (
+                      <tr>
+                        <td className="px-6 py-6 text-sm text-slate-500" colSpan={5}>
+                          Loading reports...
+                        </td>
+                      </tr>
+                    )}
+                    {!isReportsLoading && filteredReports.length === 0 && (
+                      <tr>
+                        <td className="px-6 py-6 text-sm text-slate-500" colSpan={5}>
+                          No saved reports yet. Generate a report to create your worklist.
+                        </td>
+                      </tr>
+                    )}
+                    {filteredReports.slice(0, 30).map((item) => (
+                      <tr key={item.id} className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30">
+                        <td className="px-6 py-4">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-semibold uppercase ${statusBadgeClasses(
+                              item.status
+                            )}`}
+                          >
+                            <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                            {labelForStatus(item.status)}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="font-semibold text-slate-900 dark:text-white">{item.patientName}</div>
+                          <div className="text-xs text-slate-500">ID: {item.patientId || "N/A"}</div>
+                        </td>
+                        <td className="px-6 py-4 font-mono text-sm text-slate-600 dark:text-slate-400">
+                          {formatGeneratedTime(
+                            item.generatedAtMs || item.createdAtMs || item.updatedAtMs
+                          )}
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className="rounded bg-slate-100 px-2 py-1 text-xs font-medium dark:bg-slate-800">
+                            {modalityForTemplateId(item.templateId, templates)}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <button
+                            className="rounded-lg bg-primary/10 px-3 py-1.5 text-xs font-bold text-primary opacity-0 transition-opacity group-hover:opacity-100"
+                            onClick={() => openReportFromWorklist(item)}
+                          >
+                            Open Report
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
               <div className="space-y-3 md:hidden">
-                <div className="rounded-xl border border-blue-100 bg-white p-4 shadow-sm">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-100 px-2 py-1 text-[11px] font-semibold uppercase text-blue-700">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-                      In Progress
-                    </span>
-                    <span className="text-xs font-medium text-slate-400">ACC-44921-X</span>
+                {isReportsLoading && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
+                    Loading reports...
                   </div>
-                  <p className="font-semibold text-slate-900">Elena Rodriguez</p>
-                  <p className="text-xs text-slate-500">Chest X-Ray • Age 42 • ID 882910</p>
-                  <button
-                    className="mt-3 w-full rounded-lg bg-primary/10 px-3 py-2 text-xs font-bold text-primary"
-                    onClick={() => {
-                      if (!templateId) setTemplateId("XRAY_CHEST");
-                      setActiveView("recording");
-                    }}
-                  >
-                    Resume Report
-                  </button>
-                </div>
-                <div className="rounded-xl border border-orange-100 bg-white p-4 shadow-sm">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="inline-flex items-center rounded-full bg-orange-100 px-2 py-1 text-[11px] font-semibold uppercase text-orange-700">
-                      Pending Review
-                    </span>
-                    <span className="text-xs font-medium text-slate-400">ACC-44930-M</span>
+                )}
+                {!isReportsLoading && filteredReports.length === 0 && (
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-500 shadow-sm">
+                    No reports saved yet.
                   </div>
-                  <p className="font-semibold text-slate-900">James McAvoy</p>
-                  <p className="text-xs text-slate-500">Brain MRI • Age 68 • ID 110294</p>
-                  <button
-                    className="mt-3 w-full rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50"
-                    onClick={() => canGoReport && setActiveView("report")}
-                    disabled={!canGoReport}
-                  >
-                    Sign Off
-                  </button>
-                </div>
-                <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-[11px] font-semibold uppercase text-slate-600">
-                      Draft
-                    </span>
-                    <span className="text-xs font-medium text-slate-400">ACC-44935-C</span>
+                )}
+                {filteredReports.slice(0, 10).map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                    <div className="mb-2 flex items-center justify-between">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-1 text-[11px] font-semibold uppercase ${statusBadgeClasses(
+                          item.status
+                        )}`}
+                      >
+                        {labelForStatus(item.status)}
+                      </span>
+                      <span className="text-xs font-medium text-slate-400">
+                        {formatGeneratedTime(
+                          item.generatedAtMs || item.createdAtMs || item.updatedAtMs
+                        )}
+                      </span>
+                    </div>
+                    <p className="font-semibold text-slate-900">{item.patientName}</p>
+                    <p className="text-xs text-slate-500">
+                      {modalityForTemplateId(item.templateId, templates)} • ID {item.patientId || "N/A"}
+                    </p>
+                    <button
+                      className="mt-3 w-full rounded-lg bg-primary/10 px-3 py-2 text-xs font-bold text-primary"
+                      onClick={() => openReportFromWorklist(item)}
+                    >
+                      Open Report
+                    </button>
                   </div>
-                  <p className="font-semibold text-slate-900">Sarah Chen</p>
-                  <p className="text-xs text-slate-500">Abdominal CT • Age 29 • ID 339201</p>
-                  <button
-                    className="mt-3 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-                    onClick={() => canGoReport && setActiveView("report")}
-                    disabled={!canGoReport}
-                  >
-                    Edit Draft
-                  </button>
-                </div>
+                ))}
               </div>
             </section>
           </div>
         </main>
-
-        <div className="fixed bottom-6 right-6 z-50 hidden md:block">
-          <div className="w-72 transform rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl transition-all hover:-translate-y-1 dark:border-slate-800 dark:bg-slate-900">
-            <div className="mb-3 flex items-center gap-3">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary text-white">
-                <span className="material-icons-round text-sm">settings_voice</span>
-              </div>
-              <div>
-                <p className="text-xs font-bold uppercase leading-tight tracking-tighter text-slate-900 dark:text-white">
-                  altrixa.ai
-                </p>
-                <p className="text-[10px] font-medium text-green-500">Listening for wake word...</p>
-              </div>
-            </div>
-            <div className="rounded-lg bg-slate-50 p-3 dark:bg-slate-800">
-              <p className="text-xs italic text-slate-500">
-                &quot;Select a template card, then start dictation to generate report draft...&quot;
-              </p>
-            </div>
-            <div className="mt-3 flex items-center justify-between">
-              <div className="flex gap-1">
-                <div className="h-3 w-1 animate-pulse rounded-full bg-primary/40" />
-                <div className="h-5 w-1 rounded-full bg-primary" />
-                <div className="h-2 w-1 animate-pulse rounded-full bg-primary/60" />
-                <div className="h-4 w-1 rounded-full bg-primary/80" />
-              </div>
-              <span className="text-[10px] font-bold text-primary">VOICE ON</span>
-            </div>
-          </div>
-        </div>
 
         {canGoRecording && (
           <div
@@ -1475,7 +2981,7 @@ export default function Home() {
           >
             <button
               className="flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-primary/30 transition-all active:scale-95"
-              onClick={() => setActiveView("recording")}
+              onClick={startNewReportSession}
             >
               <span className="material-icons-round">add_circle</span>
               Start New Report
@@ -1483,74 +2989,114 @@ export default function Home() {
           </div>
         )}
 
-        {error && <div className="floating-error">{error}</div>}
+        {errorToast}
       </div>
     );
   }
 
   if (activeView === "recording") {
     return (
-      <div className="flex min-h-screen flex-col bg-background-light text-slate-800 dark:bg-background-dark dark:text-slate-200">
-        <header className="sticky top-0 z-50 flex items-center justify-between border-b border-slate-200 bg-white px-4 py-4 dark:border-slate-800 dark:bg-slate-900 md:px-6">
-          <div className="flex items-center gap-4 md:gap-6">
+      <div className="flex h-screen flex-col overflow-hidden bg-background-light text-slate-800 dark:bg-background-dark dark:text-slate-200">
+        <header className={`${sidebarOffsetClass} sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-900 md:px-8`}>
+          <div className="flex items-center gap-6">
             <button
-              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+              className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
               onClick={() => setActiveView("dashboard")}
             >
-              Back
+              Dashboard
             </button>
-            <div className="flex items-center gap-2">
-              <div className="rounded-lg bg-primary p-1.5 text-white">
-                <span className="material-icons text-xl leading-none">mic</span>
-              </div>
-              <h1 className="text-lg font-bold tracking-tight">
-                <span className="text-primary">altrixa.ai</span>
-              </h1>
+            <div className="flex flex-col">
+              <span className="text-xs font-medium uppercase text-slate-500">Template</span>
+              <span className="text-sm font-semibold">{selectedTemplate?.title || "Not selected"}</span>
             </div>
-            <div className="hidden h-6 w-px bg-slate-200 md:block dark:bg-slate-800" />
+            <div className="flex flex-col">
+              <span className="text-xs font-medium uppercase text-slate-500">Patient</span>
+              <span className="text-sm font-semibold">{activeReport?.patientName || "Not set"}</span>
+            </div>
             <div className="hidden flex-col md:flex">
-              <span className="text-xs font-semibold uppercase tracking-wider text-slate-500">Current Session</span>
-              <span className="text-sm font-medium">{selectedTemplate?.title || "Select template from dashboard"}</span>
+              <span className="text-xs font-medium uppercase text-slate-500">Status</span>
+              <span className="text-sm font-semibold text-primary">
+                {isGenerating ? "Generating" : isRecording ? "Recording" : "Ready"}
+              </span>
             </div>
           </div>
-          <div className="hidden items-center gap-8 md:flex">
-            <div className="flex gap-6">
-              <div className="text-right">
-                <p className="text-xs font-medium uppercase text-slate-500">Patient Name</p>
-                <p className="text-sm font-semibold">Jane Doe</p>
-              </div>
-              <div className="text-right">
-                <p className="text-xs font-medium uppercase text-slate-500">Patient ID</p>
-                <p className="text-sm font-semibold text-primary">#882-X</p>
-              </div>
-            </div>
+          <div className="hidden rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold uppercase text-primary md:inline-flex">
+            Recording
           </div>
         </header>
 
-        <main className="flex flex-1 overflow-hidden pb-52 md:pb-0">
-          <aside className="hidden w-16 flex-col items-center gap-4 border-r border-slate-200 bg-white py-6 md:flex dark:border-slate-800 dark:bg-slate-900">
-            <button
-              className="rounded-xl p-2 text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
-              title="Dashboard"
-              onClick={() => setActiveView("dashboard")}
-            >
-              <span className="material-icons-round">dashboard</span>
-            </button>
-            <button
-              className="rounded-xl bg-primary/10 p-2 text-primary"
-              title="Recording"
-              onClick={() => setActiveView("recording")}
-            >
-              <span className="material-icons-round">mic</span>
-            </button>
-            <button
-              className="rounded-xl p-2 text-slate-400 transition-colors hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-slate-200"
-              title="Report Editor"
-              onClick={() => canGoReport && setActiveView("report")}
-              disabled={!canGoReport}
-            >
-              <span className="material-icons-round">edit_note</span>
-            </button>
+        <main className={`${sidebarOffsetClass} flex min-h-0 flex-1 overflow-hidden pb-52 md:pb-0`}>
+          <aside
+            className={`hidden ${sidebarWidthClass} fixed inset-y-0 left-0 z-40 flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
+          >
+            <div className="flex items-center justify-between p-4">
+              <div className="flex items-center gap-2 text-primary">
+                <span className="material-icons-round text-3xl">analytics</span>
+                {!isSidebarCollapsed && (
+                  <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                )}
+              </div>
+              <button
+                type="button"
+                className="rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+                onClick={() => setIsSidebarCollapsed((current) => !current)}
+                title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              >
+                <span className="material-icons-round text-base">
+                  {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+                </span>
+              </button>
+            </div>
+            <nav className="flex-1 space-y-1 px-3">
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                title="Dashboard"
+                onClick={() => setActiveView("dashboard")}
+              >
+                <span className="material-icons-round">dashboard</span>
+                {!isSidebarCollapsed && "Dashboard"}
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-left font-medium text-primary"
+                title="Recording"
+                onClick={() => setActiveView("recording")}
+              >
+                <span className="material-icons-round">mic</span>
+                {!isSidebarCollapsed && "Recording"}
+              </button>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                title="Report Editor"
+                onClick={() => canGoReport && setActiveView("report")}
+                disabled={!canGoReport || isGenerating}
+              >
+                <span className="material-icons-round">edit_note</span>
+                {!isSidebarCollapsed && "Report Editor"}
+              </button>
+            </nav>
+            <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+              <div className="flex items-center gap-3 p-2">
+                <img
+                  className="h-10 w-10 rounded-full object-cover shadow-sm"
+                  alt="Radiologist"
+                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+                />
+                {!isSidebarCollapsed && (
+                  <div className="overflow-hidden">
+                    <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{doctorName}</p>
+                    <p className="truncate text-xs text-slate-500">{doctorProfile?.role || "Radiologist"}</p>
+                  </div>
+                )}
+              </div>
+              {!isSidebarCollapsed && currentUser && (
+                <button
+                  className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={handleSignOut}
+                >
+                  Sign Out
+                </button>
+              )}
+            </div>
           </aside>
 
           <div className="relative flex flex-1 flex-col">
@@ -1561,7 +3107,11 @@ export default function Home() {
                     <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-75" />
                     <span className="relative inline-flex h-2 w-2 rounded-full bg-primary" />
                   </span>
-                  {isRecording ? "Recording Live" : "Recorder Ready"}
+                  {isRecording
+                    ? isRecordingPaused
+                      ? "Recording Paused"
+                      : "Recording Live"
+                    : "Recorder Ready"}
                 </div>
                 <h2 className="text-3xl font-bold text-slate-900 dark:text-white">Dictating Report Findings</h2>
                 <p className="mt-2 text-slate-500">AI is processing your speech in real-time...</p>
@@ -1576,7 +3126,7 @@ export default function Home() {
                       className="bar"
                       style={{
                         height: `${heights[index]}px`,
-                        opacity: isRecording ? 1 : 0.5
+                        opacity: isRecording ? (isRecordingPaused ? 0.6 : 1) : 0.5
                       }}
                     />
                   );
@@ -1591,7 +3141,15 @@ export default function Home() {
             <div className="h-48 overflow-hidden border-t border-slate-200 bg-white/60 p-8 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/60">
               <div className="mx-auto max-w-3xl">
                 <p className="text-lg leading-relaxed text-slate-400">
-                  {audioFile ? (
+                  {isLoadingSavedAudio ? (
+                    <>
+                      Loading previous recording... You can hit{" "}
+                      <span className="font-medium italic text-slate-900 underline decoration-primary/30 underline-offset-4 dark:text-white">
+                        Stop &amp; Generate
+                      </span>{" "}
+                      to regenerate, or start recording for a new dictation.
+                    </>
+                  ) : audioFile ? (
                     <>
                       Audio captured successfully. <span className="font-medium italic text-slate-900 underline decoration-primary/30 underline-offset-4 dark:text-white">{audioFile.name}</span> is ready for
                       processing. Size: <span className="font-medium text-slate-900 dark:text-white">{formatBytes(audioFile.size)}</span>.
@@ -1608,22 +3166,47 @@ export default function Home() {
 
             <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 flex-wrap items-center gap-3 rounded-full border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-300/40 dark:border-slate-700 dark:bg-slate-800 dark:shadow-none md:flex">
               <button
-                className="flex h-14 w-14 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
-                onClick={startRecording}
-                disabled={isRecording}
-                title="Start recording"
+                className={`flex h-14 items-center justify-center rounded-full font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                  showStopAndProcess
+                    ? "w-14 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
+                    : "gap-3 bg-primary px-8 text-white shadow-lg shadow-primary/30 hover:bg-primary/90"
+                }`}
+                onClick={() => {
+                  if (!isRecording) {
+                    void startRecording();
+                    return;
+                  }
+                  if (isRecordingPaused) {
+                    resumeRecording();
+                    return;
+                  }
+                  pauseRecording();
+                }}
+                disabled={isGenerating}
+                title={!isRecording ? "Start recording" : isRecordingPaused ? "Resume recording" : "Pause recording"}
               >
-                <span className="material-icons">{isRecording ? "radio_button_checked" : "play_arrow"}</span>
+                <span className="material-icons">
+                  {!isRecording ? "play_arrow" : isRecordingPaused ? "play_arrow" : "pause"}
+                </span>
+                {!showStopAndProcess && "START RECORDING"}
               </button>
-              <button
-                className="group flex h-14 items-center gap-3 rounded-full bg-primary px-8 font-bold text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                onClick={stopAndProcess}
-                disabled={!canProcessAudio || isGenerating}
-                title="Stop and process report"
-              >
-                <span className="material-icons transition-transform group-hover:scale-110">stop</span>
-                {isGenerating ? "PROCESSING..." : "STOP & PROCESS REPORT"}
-              </button>
+              {showStopAndProcess && (
+                <button
+                  className="group flex h-14 items-center gap-3 rounded-full bg-primary px-8 font-bold text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={stopAndProcess}
+                  disabled={!canProcessAudio || isGenerating}
+                  title="Stop and process report"
+                >
+                  <span
+                    className={`material-icons transition-transform ${
+                      isGenerating ? "animate-spin" : "group-hover:scale-110"
+                    }`}
+                  >
+                    {isGenerating ? "autorenew" : "stop"}
+                  </span>
+                  {isGenerating ? "GENERATING REPORT..." : "STOP & GENERATE"}
+                </button>
+              )}
               <label className="flex h-14 w-14 cursor-pointer items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300">
                 <span className="material-icons">upload_file</span>
                 <input
@@ -1640,7 +3223,7 @@ export default function Home() {
             <div className="mb-8 flex items-center justify-between">
               <h3 className="text-sm font-bold uppercase tracking-widest text-slate-500">Report Template</h3>
               <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold text-primary">
-                {audioFile ? "4/7 COMPLETED" : "0/7 COMPLETED"}
+                {completedTopics}/{recordingSidebarTopics.length} COMPLETED
               </span>
             </div>
             <div className="space-y-6">
@@ -1649,24 +3232,42 @@ export default function Home() {
                   {selectedTemplate?.title || "Select template"}
                 </h4>
                 <div className="space-y-3">
-                  {(selectedTemplate?.allowedTopics || ["Lungs & Pleura", "Cardiac Silhouette", "Impression"])
-                    .slice(0, 6)
-                    .map((topic, index) => {
-                      const checked = audioFile ? index < 2 : false;
-                      return (
-                        <div key={topic} className="flex items-center gap-3">
-                          {checked ? (
-                            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-primary/20">
-                              <span className="material-icons text-[14px] font-bold text-primary">check</span>
-                            </div>
-                          ) : (
-                            <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-primary/30" />
-                          )}
-                          <span className={`text-sm font-medium ${checked ? "text-slate-900 dark:text-slate-100" : "text-slate-500"}`}>
-                            {topic}
-                          </span>
-                        </div>
-                      );
+                  {recordingSidebarTopics.map((topic, index) => {
+                    const checked = index < completedTopics;
+                    return (
+                      <div key={topic} className="flex items-center gap-3">
+                        {checked ? (
+                          <div
+                            className={`flex h-5 w-5 items-center justify-center rounded-full ${
+                              isGenerating
+                                ? "bg-green-100 dark:bg-green-900/40"
+                                : "bg-primary/20"
+                            }`}
+                          >
+                            <span
+                              className={`material-icons text-[14px] font-bold ${
+                                isGenerating ? "text-green-600 dark:text-green-400" : "text-primary"
+                              }`}
+                            >
+                              check
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex h-5 w-5 items-center justify-center rounded-full border-2 border-primary/30" />
+                        )}
+                        <span
+                          className={`text-sm font-medium ${
+                            checked
+                              ? isGenerating
+                                ? "text-green-700 dark:text-green-300"
+                                : "text-slate-900 dark:text-slate-100"
+                              : "text-slate-500"
+                          }`}
+                        >
+                          {topic}
+                        </span>
+                      </div>
+                    );
                   })}
                 </div>
               </div>
@@ -1685,11 +3286,11 @@ export default function Home() {
                 onClick={resetAudio}
                 className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
-                Reset Audio
+                {audioFile ? "Re-record" : "Reset Audio"}
               </button>
               <button
                 onClick={() => canGoReport && setActiveView("report")}
-                disabled={!canGoReport}
+                disabled={!canGoReport || isGenerating}
                 className="w-full rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Open Editor
@@ -1713,29 +3314,55 @@ export default function Home() {
                   onClick={resetAudio}
                   className="rounded-md border border-slate-200 px-2 py-1 text-[11px] font-semibold text-slate-600 dark:border-slate-700 dark:text-slate-300"
                 >
-                  Reset
+                  {audioFile ? "Re-record" : "Reset"}
                 </button>
               </div>
-              <div className="grid grid-cols-[3rem,1fr,3rem] items-center gap-2">
+              <div
+                className={`grid items-center gap-2 ${
+                  showStopAndProcess ? "grid-cols-[3rem,1fr,3rem]" : "grid-cols-[1fr,3rem]"
+                }`}
+              >
                 <button
-                  className="flex h-12 w-12 items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
-                  onClick={startRecording}
-                  disabled={isRecording}
-                  title="Start recording"
+                  className={`flex h-12 items-center justify-center rounded-xl font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
+                    showStopAndProcess
+                      ? "w-12 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
+                      : "gap-2 bg-primary px-4 text-white shadow-lg shadow-primary/30 hover:bg-primary/90"
+                  }`}
+                  onClick={() => {
+                    if (!isRecording) {
+                      void startRecording();
+                      return;
+                    }
+                    if (isRecordingPaused) {
+                      resumeRecording();
+                      return;
+                    }
+                    pauseRecording();
+                  }}
+                  disabled={isGenerating}
+                  title={!isRecording ? "Start recording" : isRecordingPaused ? "Resume recording" : "Pause recording"}
                 >
-                  <span className="material-icons">{isRecording ? "radio_button_checked" : "play_arrow"}</span>
-                </button>
-                <button
-                  className="group flex h-12 flex-col items-center justify-center rounded-xl bg-primary px-3 text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={stopAndProcess}
-                  disabled={!canProcessAudio || isGenerating}
-                  title="Stop and process report"
-                >
-                  <span className="text-[10px] font-medium uppercase tracking-wide">
-                    {isGenerating ? "Please wait" : "Complete & Generate"}
+                  <span className="material-icons">
+                    {!isRecording ? "play_arrow" : isRecordingPaused ? "play_arrow" : "pause"}
                   </span>
-                  <span className="text-sm font-bold">{isGenerating ? "Processing..." : "Stop & Process"}</span>
+                  {!showStopAndProcess && <span className="text-sm">Start Recording</span>}
                 </button>
+                {showStopAndProcess && (
+                  <button
+                    className="group flex h-12 flex-col items-center justify-center rounded-xl bg-primary px-3 text-white shadow-lg shadow-primary/30 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={stopAndProcess}
+                    disabled={!canProcessAudio || isGenerating}
+                    title="Stop and process report"
+                  >
+                    <span className="text-[10px] font-medium uppercase tracking-wide">
+                      {isGenerating ? "Generating" : "Stop & Generate"}
+                    </span>
+                    <span className="flex items-center gap-1 text-sm font-bold">
+                      {isGenerating && <span className="material-icons animate-spin text-sm">autorenew</span>}
+                      {isGenerating ? "Processing..." : "Generate"}
+                    </span>
+                  </button>
+                )}
                 <label className="flex h-12 w-12 cursor-pointer items-center justify-center rounded-full bg-slate-100 text-slate-600 transition-all hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300">
                   <span className="material-icons">upload_file</span>
                   <input
@@ -1748,7 +3375,7 @@ export default function Home() {
               </div>
               <button
                 onClick={() => canGoReport && setActiveView("report")}
-                disabled={!canGoReport}
+                disabled={!canGoReport || isGenerating}
                 className="mt-2 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-200"
               >
                 Open Editor
@@ -1757,174 +3384,209 @@ export default function Home() {
           </div>
         </main>
 
-        <footer className="hidden items-center justify-between border-t border-slate-200 bg-white px-6 py-2 text-[11px] font-medium text-slate-400 md:flex dark:border-slate-800 dark:bg-slate-900">
+        <footer className={`${sidebarOffsetClass} hidden items-center justify-between border-t border-slate-200 bg-white px-6 py-2 text-[11px] font-medium text-slate-400 md:flex dark:border-slate-800 dark:bg-slate-900`}>
           <div className="flex gap-4">
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-green-500" /> MIC: Sennheiser SC 660
+              <span className="h-2 w-2 rounded-full bg-green-500" /> MIC: {detectedMicLabel}
             </span>
             <span className="flex items-center gap-1">
-              <span className="h-2 w-2 rounded-full bg-slate-400" /> NETWORK: 42ms Latency
+              <span className="h-2 w-2 rounded-full bg-slate-400" /> INPUT LATENCY:{" "}
+              {inputLatencyMs ? `${inputLatencyMs} ms` : "N/A"}
             </span>
           </div>
           <div>AI ENGINE: altrixa.ai | EN-US</div>
         </footer>
 
-        {error && <div className="floating-error">{error}</div>}
+        {errorToast}
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-screen flex-col bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100">
-      <header className="sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 md:px-6 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex items-center gap-4">
+    <div className="flex h-screen flex-col overflow-hidden bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100">
+      <header className={`${sidebarOffsetClass} sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 md:px-8 dark:border-slate-800 dark:bg-slate-900`}>
+        <div className="flex items-center gap-6">
           <button
-            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-            onClick={() => setActiveView("recording")}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
+            onClick={() => setActiveView("dashboard")}
           >
-            Back
+            Dashboard
           </button>
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary text-white">
-            <span className="material-icons-round">analytics</span>
-          </div>
-          <div>
-            <h1 className="text-lg font-bold leading-tight">altrixa.ai</h1>
-            <p className="text-xs text-slate-500 dark:text-slate-400">Radiology Reporting Suite v2.4</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <div className="mr-4 hidden flex-col items-end md:flex">
-            <span className="text-sm font-semibold">Dr. Julian Thorne</span>
-            <span className="text-xs uppercase tracking-wider text-slate-500">Radiologist</span>
-          </div>
-          <button className="relative rounded-full p-2 transition-colors hover:bg-slate-100 dark:hover:bg-slate-800">
-            <span className="material-icons-round text-slate-600 dark:text-slate-400">notifications</span>
-            <span className="absolute right-2 top-2 h-2 w-2 rounded-full border-2 border-white bg-red-500 dark:border-slate-900" />
-          </button>
-          <div className="h-10 w-10 overflow-hidden rounded-full bg-slate-200">
-            <img
-              className="h-full w-full object-cover"
-              alt="Doctor"
-              src="https://lh3.googleusercontent.com/aida-public/AB6AXuAVPFf5Ek559wPD6xWW4U2RWMQLw23KV5yVjaWpaR3SgH0IwJoep762T0EW_nM27M8b2kGkv7ifSxGSwJeQ9hWnFk1nbzImHjHz8hVzCB7PjU2UsMpogLJazOvs2o1BmZ6dddzyQM2MVBa0BCnazXmZ5932LcPOZevjSiv6_EqvuOqN9BrXYvWVw2AgQ8Sm1CDhR3qUfOezcS3th7WVTFhYxGgbLGVFk5XxepSo6i16qNk1PggQTn0QgrqhPbznQt0LMDpxwpHZ8Q"
-            />
-          </div>
-        </div>
-      </header>
-
-      <section className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-200 bg-white px-4 py-4 md:px-8 dark:border-slate-800 dark:bg-slate-900">
-        <div className="flex flex-wrap items-center gap-4 md:gap-6">
           <div className="flex flex-col">
-            <span className="text-xs font-bold uppercase tracking-tighter text-slate-500">Patient</span>
-            <span className="font-semibold text-slate-800 dark:text-white">Johnathan Doe</span>
+            <span className="text-xs font-medium uppercase text-slate-500">Template</span>
+            <span className="text-sm font-semibold">{selectedTemplate?.title || "Not selected"}</span>
           </div>
-          <div className="hidden h-8 w-px bg-slate-200 md:block dark:bg-slate-800" />
           <div className="flex flex-col">
-            <span className="text-xs font-bold uppercase tracking-tighter text-slate-500">ID / DOB</span>
-            <span className="font-medium text-slate-700 dark:text-slate-300">#PX-9921 • 12 May 1984</span>
+            <span className="text-xs font-medium uppercase text-slate-500">Patient</span>
+            <span className="text-sm font-semibold">{activeReport?.patientName || "Unknown Patient"}</span>
           </div>
-          <div className="hidden h-8 w-px bg-slate-200 md:block dark:bg-slate-800" />
-          <div className="flex flex-col">
-            <span className="text-xs font-bold uppercase tracking-tighter text-slate-500">Modality</span>
-            <span className="rounded bg-primary/10 px-2 py-0.5 text-sm font-medium text-primary">
-              {selectedTemplate?.title || "Template not selected"}
+          <div className="hidden flex-col md:flex">
+            <span className="text-xs font-medium uppercase text-slate-500">Status</span>
+            <span className="text-sm font-semibold text-primary">
+              {activeReportStatus ? labelForStatus(activeReportStatus) : "Draft"}
             </span>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="flex items-center gap-1.5 rounded-full bg-green-50 px-3 py-1.5 text-xs font-medium text-green-600 dark:bg-green-900/20 dark:text-green-400">
+          <div className="hidden flex-col items-end md:flex">
+            <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+              ID / Date
+            </span>
+            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+              {activeReport?.patientId || "N/A"} • {activeReport?.patientDate || "N/A"}
+            </span>
+          </div>
+          <span className="flex items-center gap-1.5 rounded-full bg-green-50 px-3 py-1.5 text-[10px] font-medium text-green-600 dark:bg-green-900/20 dark:text-green-400">
             <span className="h-2 w-2 animate-pulse rounded-full bg-green-500" />
-            Auto-saved 2m ago
+            {isSavingReport ? "Saving..." : "Saved"}
           </span>
-          <span className="text-xs italic text-slate-400">Draft ID: 882-C</span>
+          <span className="hidden text-[10px] italic text-slate-400 md:inline">
+            Draft ID: {activeReportId || "new"}
+          </span>
+          <div className="hidden rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold uppercase text-primary md:inline-flex">
+            Report Editor
+          </div>
         </div>
-      </section>
+      </header>
 
-      <main className="flex flex-grow flex-col overflow-hidden md:flex-row">
-        <aside className="hidden w-16 flex-col items-center gap-4 border-r border-slate-200 bg-white py-6 md:flex dark:border-slate-800 dark:bg-slate-900">
-          <button
-            className="rounded-xl p-2 text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
-            title="Dashboard"
-            onClick={() => setActiveView("dashboard")}
-          >
-            <span className="material-icons-round">dashboard</span>
-          </button>
-          <button
-            className="rounded-xl p-2 text-slate-400 transition-colors hover:text-slate-600 dark:hover:text-slate-200"
-            title="Recording"
-            onClick={() => setActiveView("recording")}
-          >
-            <span className="material-icons-round">mic</span>
-          </button>
-          <button
-            className="rounded-xl bg-primary/10 p-2 text-primary"
-            title="Report Editor"
-            onClick={() => setActiveView("report")}
-          >
-            <span className="material-icons-round">edit_note</span>
-          </button>
-          <div className="my-2 h-px w-8 bg-slate-200 dark:bg-slate-700" />
-          <button className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" title="Patient History">
-            <span className="material-icons-round">history</span>
-          </button>
-          <button className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" title="Imaging Viewer">
-            <span className="material-icons-round">visibility</span>
-          </button>
-          <button className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200" title="Settings">
-            <span className="material-icons-round">settings</span>
-          </button>
+      <main className={`${sidebarOffsetClass} flex min-h-0 flex-grow flex-col overflow-hidden md:flex-row`}>
+        <aside
+          className={`hidden ${sidebarWidthClass} fixed inset-y-0 left-0 z-40 flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
+        >
+          <div className="flex items-center justify-between p-4">
+            <div className="flex items-center gap-2 text-primary">
+              <span className="material-icons-round text-3xl">analytics</span>
+              {!isSidebarCollapsed && (
+                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={() => setIsSidebarCollapsed((current) => !current)}
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <span className="material-icons-round text-base">
+                {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+              </span>
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 px-3">
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+              title="Dashboard"
+              onClick={() => setActiveView("dashboard")}
+            >
+              <span className="material-icons-round">dashboard</span>
+              {!isSidebarCollapsed && "Dashboard"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-slate-400 dark:hover:bg-slate-800"
+              title="Recording"
+              onClick={() =>
+                !isCompletedReportView &&
+                allowRecordingFromReport &&
+                goToRecordingFromReport()
+              }
+              disabled={isCompletedReportView || !allowRecordingFromReport}
+            >
+              <span className="material-icons-round">mic</span>
+              {!isSidebarCollapsed && "Recording"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-left font-medium text-primary"
+              title="Report Editor"
+              onClick={() => setActiveView("report")}
+            >
+              <span className="material-icons-round">edit_note</span>
+              {!isSidebarCollapsed && "Report Editor"}
+            </button>
+          </nav>
+          <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+            <div className="flex items-center gap-3 p-2">
+              <img
+                className="h-10 w-10 rounded-full object-cover shadow-sm"
+                alt="Radiologist"
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+              />
+              {!isSidebarCollapsed && (
+                <div className="overflow-hidden">
+                  <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">{doctorName}</p>
+                  <p className="truncate text-xs text-slate-500">{doctorProfile?.role || "Radiologist"}</p>
+                </div>
+              )}
+            </div>
+            {!isSidebarCollapsed && currentUser && (
+              <button
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </button>
+            )}
+          </div>
         </aside>
 
-        <div className="custom-scrollbar flex flex-grow flex-col overflow-y-auto p-4 md:p-6">
-          <div className="mx-auto w-full max-w-4xl space-y-6">
+        <div className="flex min-h-0 flex-grow flex-col overflow-hidden p-4 md:p-6">
+          <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-center gap-4">
-                <button
-                  className="flex h-12 w-12 items-center justify-center rounded-full bg-primary text-white shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={isRecording ? stopRecording : startRecording}
-                >
-                  <span className="material-icons-round">{isRecording ? "stop" : "mic"}</span>
-                </button>
                 <div>
-                  <p className="font-semibold text-slate-900 dark:text-slate-100">Add Audio Clarification</p>
+                  <p className="font-semibold text-slate-900 dark:text-slate-100">Audio Actions</p>
                   <p className="text-sm text-slate-500 dark:text-slate-400">
-                    {audioFile ? `${audioFile.name} • ${formatDuration(audioDuration)} • ${formatBytes(audioFile.size)}` : "Click mic to record or upload audio files"}
+                    {isLoadingSavedAudio
+                      ? "Loading saved recording..."
+                      : audioFile
+                        ? `${audioFile.name} • ${formatDuration(audioDuration)} • ${formatBytes(audioFile.size)}`
+                        : activeReport?.audioName
+                          ? `${activeReport.audioName} • ${formatDuration(audioDuration || activeReport.audioDurationSec)}`
+                          : "No audio loaded"}
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2">
-                <label className="cursor-pointer rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">
-                  Upload
-                  <input
-                    type="file"
-                    accept="audio/wav,audio/mpeg,audio/mp4,audio/x-m4a,audio/webm,audio/ogg"
-                    className="hidden"
-                    onChange={handleUpload}
-                  />
-                </label>
-                <button
-                  className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                  onClick={resetAudio}
-                >
-                  Reset
-                </button>
-                <button
-                  className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                  onClick={() => handleGenerate()}
-                  disabled={
-                    !templateId ||
-                    !audioFile ||
-                    isGenerating ||
-                    !isBackendConfigured ||
-                    !customTemplateReady ||
-                    !customTemplateProfileReady
-                  }
-                >
-                  {isGenerating ? "Generating..." : "Generate"}
-                </button>
+                {isCompletedReportView ? (
+                  <span className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-500 dark:border-slate-700 dark:text-slate-300">
+                    Completed report: listen-only
+                  </span>
+                ) : (
+                  <>
+                    <button
+                      className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                      onClick={() => handleGenerate()}
+                      disabled={
+                        !audioFile ||
+                        isGenerating ||
+                        isLoadingSavedAudio ||
+                        !isBackendConfigured ||
+                        !customTemplateReady ||
+                        !customTemplateProfileReady
+                      }
+                    >
+                      {isGenerating ? "Generating..." : "Regenerate (Same Audio)"}
+                    </button>
+                    <button
+                      className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                      onClick={goToRecordingForReRecord}
+                      disabled={!allowRecordingFromReport || isGenerating}
+                    >
+                      Re-record
+                    </button>
+                  </>
+                )}
               </div>
             </div>
 
-            <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            {audioUrl && (
+              <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
+                <p className="mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
+                  Listen to Recording
+                </p>
+                <audio controls preload="metadata" src={audioUrl} className="w-full" />
+              </div>
+            )}
+
+            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-wrap items-center justify-between border-b border-slate-200 bg-slate-50/50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50">
                 <div className="flex items-center gap-1">
                   <button
@@ -1985,17 +3647,19 @@ export default function Home() {
                 </div>
               </div>
 
-              <Editor
-                value={observations}
-                onChange={setObservations}
-                placeholder="Generated report will appear here."
-                disabled={isGenerating}
-                ref={editorRef}
-                className="report-editor"
-              />
+              <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+                <Editor
+                  value={observations}
+                  onChange={setObservations}
+                  placeholder="Generated report will appear here."
+                  disabled={isGenerating}
+                  ref={editorRef}
+                  className="report-editor viewport"
+                />
+              </div>
             </div>
 
-            <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-6 dark:border-slate-800">
+            <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-3 dark:border-slate-800">
               <div className="flex gap-2">
                 <button
                   className="flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold transition-all hover:bg-white dark:border-slate-700 dark:hover:bg-slate-800"
@@ -2014,13 +3678,34 @@ export default function Home() {
                   Download DOCX
                 </button>
               </div>
-              <button
-                className="flex items-center gap-2 rounded-lg bg-primary px-8 py-2.5 font-bold text-white shadow-lg shadow-primary/20 transition-all hover:bg-primary/90"
-                onClick={() => setActiveView("dashboard")}
-              >
-                Finalize Report
-                <span className="material-icons-round text-lg">check_circle</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  className="flex items-center gap-2 rounded-lg border border-amber-300 bg-amber-50 px-5 py-2.5 text-sm font-bold text-amber-700 transition-all hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200 dark:hover:bg-amber-900/50"
+                  onClick={handleMarkDraft}
+                  disabled={!hasObservations || isSavingReport}
+                >
+                  {isSavingReport ? "Saving..." : isCompletedReportView ? "Move to Draft" : "Save as Draft"}
+                  <span className="material-icons-round text-lg">edit_note</span>
+                </button>
+                <button
+                  className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-5 py-2.5 text-sm font-bold text-slate-700 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={handleDiscardReport}
+                  disabled={isSavingReport}
+                >
+                  {isSavingReport ? "Saving..." : "Discard"}
+                  <span className="material-icons-round text-lg">delete_outline</span>
+                </button>
+                {!isCompletedReportView && (
+                  <button
+                    className="flex items-center gap-2 rounded-lg bg-primary px-8 py-2.5 font-bold text-white shadow-lg shadow-primary/20 transition-all hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                    onClick={handleFinalizeReport}
+                    disabled={!hasObservations || isSavingReport}
+                  >
+                    {isSavingReport ? "Saving..." : "Finalize Report"}
+                    <span className="material-icons-round text-lg">check_circle</span>
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -2078,12 +3763,14 @@ export default function Home() {
               <p className="text-sm text-slate-600 dark:text-slate-400">
                 {disclaimer || "Draft only. Must be reviewed and signed by the doctor."}
               </p>
-              <button
-                className="w-full rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-                onClick={() => setActiveView("recording")}
-              >
-                Back to Recording
-              </button>
+              {!isCompletedReportView && allowRecordingFromReport && (
+                <button
+                  className="w-full rounded-lg border border-slate-200 py-2 text-xs font-bold text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  onClick={goToRecordingForReRecord}
+                >
+                  Re-record in Recording
+                </button>
+              )}
             </div>
 
             <div className="mt-6 border-t border-slate-100 pt-6 dark:border-slate-800">
@@ -2107,7 +3794,7 @@ export default function Home() {
         </button>
       </div>
 
-      {error && <div className="floating-error">{error}</div>}
+      {errorToast}
 
       {isFullscreen && (
         <div className="fullscreen-wrap">

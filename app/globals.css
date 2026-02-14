@@ -43,6 +43,19 @@ body {
   outline: none;
 }
 
+.dashboard-search-input {
+  appearance: none;
+  -webkit-appearance: none;
+  outline: none;
+  box-shadow: none;
+}
+
+.dashboard-search-input:focus,
+.dashboard-search-input:focus-visible {
+  outline: none !important;
+  box-shadow: none !important;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
 }
@@ -86,6 +99,10 @@ body {
 .report-editor.full {
   min-height: calc(100vh - 140px) !important;
   border-radius: 0.75rem !important;
+}
+
+.report-editor.viewport {
+  min-height: 100% !important;
 }
 
 .fullscreen-wrap {
