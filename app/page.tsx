@@ -364,7 +364,10 @@ function formatDuration(totalSeconds: number | null) {
 
 function formatGeneratedTime(valueMs: number) {
   if (!valueMs || !Number.isFinite(valueMs)) return "N/A";
-  return new Date(valueMs).toLocaleTimeString([], {
+  return new Date(valueMs).toLocaleString([], {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
     hour: "2-digit",
     minute: "2-digit"
   });
