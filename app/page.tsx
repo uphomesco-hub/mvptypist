@@ -153,6 +153,43 @@ function startsWithHeading(trimmedLine: string) {
   );
 }
 
+function normalizeHeadingKey(heading: string) {
+  return heading.replace(/[:\s]+/g, "").toLowerCase();
+}
+
+function splitIntoSentences(text: string) {
+  return text
+    .split(/(?<=[.!?])\s+|;\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function buildDefaultSectionSentenceMap(templateId: string) {
+  const template = getDefaultTemplateText(templateId);
+  const map: Record<string, Set<string>> = {};
+  if (!template) return map;
+
+  for (const line of template.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const heading = startsWithHeading(trimmed);
+    if (!heading) continue;
+    const headingIndex = line.toLowerCase().indexOf(heading.toLowerCase());
+    const body =
+      headingIndex >= 0
+        ? line.slice(headingIndex + heading.length).trim()
+        : trimmed.slice(heading.length).trim();
+    if (!body) continue;
+    const key = normalizeHeadingKey(heading);
+    if (!map[key]) map[key] = new Set<string>();
+    for (const sentence of splitIntoSentences(body)) {
+      map[key].add(normalizeLine(sentence));
+    }
+  }
+
+  return map;
+}
+
 function formatHeadingLine(params: {
   line: string;
   heading: string | null;
@@ -184,12 +221,65 @@ function formatHeadingLine(params: {
   return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong>${highlightedBody}`;
 }
 
+function formatHeadingLineWithSentenceDiff(params: {
+  line: string;
+  heading: string;
+  defaultSectionSentences: Record<string, Set<string>>;
+}) {
+  const { line, heading, defaultSectionSentences } = params;
+  const headingIndex = line.toLowerCase().indexOf(heading.toLowerCase());
+  if (headingIndex === -1) {
+    return escapeHtml(line);
+  }
+
+  const beforeHeading = line.slice(0, headingIndex);
+  const headingText = line.slice(headingIndex, headingIndex + heading.length);
+  const bodyText = line.slice(headingIndex + heading.length).trim();
+  if (!bodyText) {
+    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong>`;
+  }
+
+  const sentences = splitIntoSentences(bodyText);
+  if (!sentences.length) {
+    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong> ${escapeHtml(bodyText)}`;
+  }
+
+  const normalSet = defaultSectionSentences[normalizeHeadingKey(heading)];
+  if (!normalSet?.size) {
+    return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong> ${escapeHtml(bodyText)}`;
+  }
+
+  const tagged = sentences.map((sentence) => {
+    const isNormal =
+      normalSet.has(normalizeLine(sentence)) || isSkippableLine(sentence);
+    return { sentence, isNormal };
+  });
+  const hasAbnormal = tagged.some((item) => !item.isNormal);
+  const ordered = hasAbnormal
+    ? [
+        ...tagged.filter((item) => !item.isNormal),
+        ...tagged.filter((item) => item.isNormal)
+      ]
+    : tagged;
+
+  const bodyHtml = ordered
+    .map((item) =>
+      item.isNormal
+        ? escapeHtml(item.sentence)
+        : `<strong><u>${escapeHtml(item.sentence)}</u></strong>`
+    )
+    .join(" ");
+
+  return `${escapeHtml(beforeHeading)}<strong>${escapeHtml(headingText)}</strong> ${bodyHtml}`;
+}
+
 function isSkippableLine(trimmedLine: string) {
   return SKIP_LINE_PATTERNS.some((pattern) => pattern.test(trimmedLine));
 }
 
 function formatReportHtml(text: string, templateId: string) {
   const defaultLines = buildDefaultLineSet(templateId);
+  const defaultSectionSentences = buildDefaultSectionSentenceMap(templateId);
   const hasDefaults = defaultLines.size > 0;
   return text
     .split(/\r?\n/)
@@ -199,10 +289,24 @@ function formatReportHtml(text: string, templateId: string) {
       if (IMPRESSION_PATTERN.test(trimmed)) {
         return `<strong><u>${escapeHtml(line)}</u></strong>`;
       }
-      const normalized = normalizeLine(line);
       const heading = startsWithHeading(trimmed);
+      if (heading) {
+        if (!hasDefaults) {
+          return formatHeadingLine({
+            line,
+            heading,
+            highlight: false
+          });
+        }
+        return formatHeadingLineWithSentenceDiff({
+          line,
+          heading,
+          defaultSectionSentences
+        });
+      }
+      const normalized = normalizeLine(line);
       let isNormal = defaultLines.has(normalized) || isSkippableLine(trimmed);
-      if (!isNormal && !heading) {
+      if (!isNormal) {
         for (const label of REPORT_HEADINGS) {
           const normalizedWithHeading = normalizeLine(`${label} ${line}`);
           if (defaultLines.has(normalizedWithHeading)) {
