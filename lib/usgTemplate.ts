@@ -1090,12 +1090,12 @@ export function buildUsgKubReport(params: {
   const rightStarter = hasUnavailableKidneyStatement
     ? ""
     : rightKidneySize
-    ? `is normal in size, shape, position (${rightKidneySize}).`
+    ? `is normal in size (${rightKidneySize}), shape, position.`
     : "is normal in size, shape, position.";
   const leftStarter = hasUnavailableKidneyStatement
     ? ""
     : leftKidneySize
-    ? `is normal in size, shape, position (${leftKidneySize}).`
+    ? `is normal in size (${leftKidneySize}), shape, position.`
     : "is normal in size, shape, position.";
 
   const rightLine = joinSentences(
