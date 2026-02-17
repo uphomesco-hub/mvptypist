@@ -2848,12 +2848,12 @@ export default function Home() {
           </div>
         </aside>
 
-        <main className="flex-1 overflow-y-auto">
-          <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80 md:px-8">
-            <div className="flex w-full items-center gap-4 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/25 dark:border-slate-700 dark:bg-slate-800 md:max-w-96">
+        <main className="flex-1 overflow-x-hidden overflow-y-auto">
+          <header className="sticky top-0 z-10 flex h-16 items-center justify-between gap-2 border-b border-slate-200 bg-white/80 px-4 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/80 md:px-8">
+            <div className="flex min-w-0 flex-1 items-center gap-3 rounded-full border border-slate-200 bg-slate-100 px-4 py-2 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/25 dark:border-slate-700 dark:bg-slate-800 md:max-w-96 md:flex-none">
               <span className="material-icons-round text-slate-400">search</span>
               <input
-                className="dashboard-search-input w-full border-none bg-transparent p-0 text-sm focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0"
+                className="dashboard-search-input min-w-0 w-full border-none bg-transparent p-0 text-base focus:outline-none focus:ring-0 focus-visible:outline-none focus-visible:ring-0 md:text-sm"
                 placeholder="Search Patient ID, Name, or Accession #"
                 type="text"
                 value={searchQuery}
@@ -2862,7 +2862,7 @@ export default function Home() {
             </div>
             <div
               ref={mobileProfileMenuRef}
-              className="relative ml-3 flex items-center md:hidden"
+              className="relative flex flex-shrink-0 items-center md:hidden"
             >
               <button
                 className="inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
