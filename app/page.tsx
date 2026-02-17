@@ -552,6 +552,7 @@ type AdminIssue = {
   reportId: string;
   ownerUid: string;
   ownerEmail: string;
+  ownerName: string;
   patientName: string;
   templateTitle: string;
   status: ReportStatus;
@@ -575,6 +576,20 @@ function ownerUidFromDocPath(path: string) {
     return parts[1];
   }
   return "";
+}
+
+function fallbackOwnerNameFromEmail(email: string) {
+  const localPart = String(email || "").trim().split("@")[0] || "";
+  if (!localPart) return "";
+  return localPart.replace(/[._-]+/g, " ").trim();
+}
+
+function resolveOwnerName(rawName: unknown, ownerEmail: string) {
+  const explicit = String(rawName || "").trim();
+  if (explicit) return explicit;
+  const fallback = fallbackOwnerNameFromEmail(ownerEmail);
+  if (fallback) return fallback;
+  return "Unknown owner";
 }
 
 function randomAccessionId() {
@@ -989,6 +1004,10 @@ export default function Home() {
             observationEditCount: Number(data.observationEditCount || 0),
             ownerUid: String(data.ownerUid || currentUser.uid),
             ownerEmail: String(data.ownerEmail || currentUser.email || ""),
+            ownerName: resolveOwnerName(
+              data.ownerName,
+              String(data.ownerEmail || currentUser.email || "")
+            ),
             rawJson: String(data.rawJson || ""),
             flags: Array.isArray(data.flags)
               ? data.flags.map((item) => String(item || ""))
@@ -1047,6 +1066,7 @@ export default function Home() {
           const reportId = docSnap.id;
           const ownerUid = String(data.ownerUid || ownerUidFromDocPath(docSnap.ref.path));
           const ownerEmail = String(data.ownerEmail || "");
+          const ownerName = resolveOwnerName(data.ownerName, ownerEmail);
           const statusRaw = String(data.status || "draft");
           const status: ReportStatus =
             statusRaw === "completed" ||
@@ -1054,16 +1074,26 @@ export default function Home() {
             statusRaw === "discarded"
               ? statusRaw
               : "draft";
-          const aiText = String(data.aiGeneratedObservationsText || "");
-          const finalText = String(data.observationsText || "");
+          const aiText = String(data.aiGeneratedObservationsText || "").trim();
+          const finalText = String(data.observationsText || "").trim();
+          const hasComparableAiBaseline = aiText.length > 0;
+          const hasStoredEditFlag = typeof data.hasObservationEdits === "boolean";
+          if (!hasComparableAiBaseline && !hasStoredEditFlag) {
+            continue;
+          }
           const stats = computeObservationEditStats(aiText, finalText);
-          const hasObservationEdits = Boolean(data.hasObservationEdits) || stats.hasEdits;
-          if (!hasObservationEdits) continue;
+          const hasObservationEdits = hasStoredEditFlag
+            ? Boolean(data.hasObservationEdits)
+            : stats.hasEdits;
+          if (!hasObservationEdits) {
+            continue;
+          }
           next.push({
             issueId: `${ownerUid}:${reportId}`,
             reportId,
             ownerUid,
             ownerEmail,
+            ownerName,
             patientName: String(data.patientName || "Unknown Patient"),
             templateTitle: String(data.templateTitle || data.templateId || "Unknown Template"),
             status,
@@ -1163,6 +1193,7 @@ export default function Home() {
         await setDoc(
           doc(firebaseClient.db, `users/${currentUser.uid}/reports/${activeReportId}`),
           {
+            ownerName: doctorName,
             observationsHtml: observations,
             observationsText: observationsPlain,
             aiGeneratedObservationsText,
@@ -1191,7 +1222,8 @@ export default function Home() {
     activeReport?.aiGeneratedObservationsText,
     rawJson,
     flags,
-    disclaimer
+    disclaimer,
+    doctorName
   ]);
 
   useEffect(() => {
@@ -1912,6 +1944,7 @@ export default function Home() {
         {
           ownerUid: currentUser.uid,
           ownerEmail: currentUser.email || "",
+          ownerName: doctorName,
           templateId,
           templateTitle: selectedTemplate?.title || templateId,
           patientName: patientMeta.patientName,
@@ -3342,7 +3375,7 @@ export default function Home() {
 
   if (activeView === "admin" && isAdmin) {
     return (
-      <div className="flex h-screen overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+      <div className="flex h-[100dvh] overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
         <aside
           className={`hidden ${sidebarWidthClass} flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
         >
@@ -3420,7 +3453,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <main className={`${sidebarOffsetClass} flex min-h-0 flex-1 flex-col overflow-hidden`}>
+        <main className="flex min-h-0 flex-1 flex-col overflow-hidden">
           <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 md:px-6">
             <div className="flex items-center gap-3">
               <button
@@ -3451,9 +3484,9 @@ export default function Home() {
             </div>
           </header>
 
-          <div className="custom-scrollbar flex-1 overflow-y-auto p-3 md:p-6">
-            <div className="mx-auto grid w-full max-w-7xl gap-4 xl:grid-cols-[320px,1fr]">
-              <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="flex min-h-0 flex-1 overflow-hidden p-3 md:p-6">
+            <div className="grid min-h-0 w-full flex-1 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
+              <section className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
                 <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
                   <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                     Edited Reports
@@ -3462,7 +3495,7 @@ export default function Home() {
                     Select a case to compare AI output vs final report.
                   </p>
                 </div>
-                <div className="custom-scrollbar max-h-[70vh] overflow-y-auto p-2">
+                <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-2">
                   {isAdminIssuesLoading && (
                     <div className="rounded-lg px-3 py-4 text-sm text-slate-500">
                       Loading issues...
@@ -3496,8 +3529,11 @@ export default function Home() {
                         <p className="mt-1 truncate text-xs text-slate-500">
                           {issue.templateTitle}
                         </p>
-                        <p className="mt-1 truncate text-[11px] text-slate-400">
-                          {issue.ownerEmail || issue.ownerUid || "Unknown owner"}
+                        <p className="mt-1 truncate text-xs font-semibold text-slate-600 dark:text-slate-300">
+                          {issue.ownerName}
+                        </p>
+                        <p className="truncate text-[11px] text-slate-400">
+                          {issue.ownerEmail || issue.ownerUid || "Unknown"}
                         </p>
                         <div className="mt-2 flex items-center justify-between text-[11px]">
                           <span
@@ -3517,13 +3553,13 @@ export default function Home() {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <section className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
                 {!selectedAdminIssue ? (
-                  <div className="flex min-h-[320px] items-center justify-center px-4 text-sm text-slate-500">
+                  <div className="flex min-h-0 flex-1 items-center justify-center px-4 text-sm text-slate-500">
                     Select an issue from the left panel.
                   </div>
                 ) : (
-                  <div className="p-4 md:p-5">
+                  <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto p-4 md:p-5">
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
@@ -3534,9 +3570,12 @@ export default function Home() {
                         </p>
                         <p className="mt-1 text-xs text-slate-500">
                           Owner:{" "}
+                          {selectedAdminIssue.ownerName}
+                          {" ("}
                           {selectedAdminIssue.ownerEmail ||
                             selectedAdminIssue.ownerUid ||
                             "Unknown"}
+                          {")"}
                           {" • "}
                           Updated: {formatGeneratedTime(selectedAdminIssue.updatedAtMs)}
                           {" • "}
@@ -3560,7 +3599,7 @@ export default function Home() {
                         <textarea
                           readOnly
                           value={selectedAdminIssue.aiText}
-                          className="custom-scrollbar h-64 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[40vh]"
+                          className="custom-scrollbar h-[32vh] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[37vh] xl:h-[41vh]"
                         />
                       </div>
                       <div>
@@ -3570,7 +3609,7 @@ export default function Home() {
                         <textarea
                           readOnly
                           value={selectedAdminIssue.finalText}
-                          className="custom-scrollbar h-64 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[40vh]"
+                          className="custom-scrollbar h-[32vh] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[37vh] xl:h-[41vh]"
                         />
                       </div>
                     </div>

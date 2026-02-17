@@ -19,6 +19,7 @@ export type ReportRecord = {
   observationEditCount: number;
   ownerUid: string;
   ownerEmail: string;
+  ownerName: string;
   rawJson: string;
   flags: string[];
   disclaimer: string;
