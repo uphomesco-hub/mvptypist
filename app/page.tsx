@@ -2702,15 +2702,28 @@ export default function Home() {
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
-            {isAdmin && (
-              <button
-                className="ml-3 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 md:hidden"
-                onClick={() => setActiveView("admin")}
-              >
-                <span className="material-icons-round text-sm">bug_report</span>
-                {adminIssueCount}
-              </button>
-            )}
+            <div className="ml-3 flex items-center gap-2 md:hidden">
+              {isAdmin && (
+                <button
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  onClick={() => setActiveView("admin")}
+                  title="Admin Issues"
+                >
+                  <span className="material-icons-round text-sm">bug_report</span>
+                  {adminIssueCount}
+                </button>
+              )}
+              {currentUser && (
+                <button
+                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  onClick={handleSignOut}
+                  title="Sign Out"
+                >
+                  <span className="material-icons-round text-sm">logout</span>
+                  Sign Out
+                </button>
+              )}
+            </div>
             <div className="ml-4 hidden items-center gap-6 md:flex">
               {isAdmin && (
                 <button
