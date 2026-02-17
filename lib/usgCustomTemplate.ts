@@ -109,7 +109,12 @@ const SECTION_DEPENDENCIES: Record<
     "kidneys_parenchyma",
     "kidneys_calculus_hydronephrosis"
   ],
-  BLADDER: ["bladder_main", "bladder_mass_calculus"],
+  BLADDER: [
+    "bladder_main",
+    "bladder_mass_calculus",
+    "bladder_prevoid_volume_cc",
+    "bladder_postvoid_volume_cc"
+  ],
   PROSTATE: ["prostate_main", "prostate_echotexture"],
   UTERUS: [
     "uterus_main",

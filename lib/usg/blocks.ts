@@ -68,7 +68,12 @@ export const USG_BLOCKS: UsgBlockDef[] = [
   {
     id: "BLADDER",
     heading: "Urinary Bladder:",
-    fieldKeys: ["bladder_main", "bladder_mass_calculus"]
+    fieldKeys: [
+      "bladder_main",
+      "bladder_mass_calculus",
+      "bladder_prevoid_volume_cc",
+      "bladder_postvoid_volume_cc"
+    ]
   },
   {
     id: "PROSTATE_UTERUS_ADNEXA",

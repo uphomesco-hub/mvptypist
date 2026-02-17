@@ -30,6 +30,8 @@ export type UsgFieldOverrides = {
   kidneys_calculus_hydronephrosis?: string;
   bladder_main?: string;
   bladder_mass_calculus?: string;
+  bladder_prevoid_volume_cc?: string;
+  bladder_postvoid_volume_cc?: string;
   prostate_main?: string;
   prostate_echotexture?: string;
   uterus_main?: string;
@@ -102,6 +104,8 @@ const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
     "NO calculus, mass lesion or hydronephrosis seen.",
   bladder_main: "partially filled",
   bladder_mass_calculus: "",
+  bladder_prevoid_volume_cc: "",
+  bladder_postvoid_volume_cc: "",
   prostate_main: "The volume of prostate gland is normal.",
   prostate_echotexture:
     "The prostate gland has homogeneous echotexture with intact capsule.",
@@ -402,7 +406,9 @@ export function normalizeUsgOverridesForConsistency(params: {
       organ: "bladder",
       localText: collectText(normalizedOverrides, [
         "bladder_main",
-        "bladder_mass_calculus"
+        "bladder_mass_calculus",
+        "bladder_prevoid_volume_cc",
+        "bladder_postvoid_volume_cc"
       ]),
       globalText
     }),
@@ -484,7 +490,11 @@ export function normalizeUsgOverridesForConsistency(params: {
     suppressed,
     state: organStates.bladder,
     mainField: "bladder_main",
-    detailFields: ["bladder_mass_calculus"]
+    detailFields: [
+      "bladder_mass_calculus",
+      "bladder_prevoid_volume_cc",
+      "bladder_postvoid_volume_cc"
+    ]
   });
   enforceOrganSuppression({
     overrides: normalizedOverrides,
@@ -564,7 +574,9 @@ export function normalizeUsgOverridesForConsistency(params: {
   );
   const bladderText = collectText(normalizedOverrides, [
     "bladder_main",
-    "bladder_mass_calculus"
+    "bladder_mass_calculus",
+    "bladder_prevoid_volume_cc",
+    "bladder_postvoid_volume_cc"
   ]);
   const needsCystitisImpression =
     hasBladderWallThickening(bladderText) && !/\bcystitis\b/i.test(normalizedImpression);
@@ -739,6 +751,14 @@ function uniqueSentenceList(sentences: string[]) {
   return out;
 }
 
+function formatBladderVolumeLine(label: string, rawValue: string) {
+  const value = rawValue.trim();
+  if (!value) return "";
+  const hasVolumeUnit = /\b(cc|ml|mL|cm3|cm\^3)\b/i.test(value);
+  const normalizedValue = hasVolumeUnit ? value : `${value} cc`;
+  return ensurePeriod(`${label}: ${normalizedValue}`);
+}
+
 function resolvePatientInfo(patient: UsgPatientInfo, gender: UsgGender) {
   const name = patient.name?.trim() || "________________";
   const genderLabel =
@@ -747,23 +767,47 @@ function resolvePatientInfo(patient: UsgPatientInfo, gender: UsgGender) {
   return { name, gender: genderLabel, date };
 }
 
-function buildConclusionLine(
+function splitConclusionItems(text: string) {
+  const normalized = text
+    .replace(/\r/g, "\n")
+    .replace(/\u2022|\u25CF|\u25E6|\u25AA/g, "\n")
+    .replace(/\s*;\s*/g, "\n")
+    .trim();
+  if (!normalized) return [];
+
+  return normalized
+    .split(
+      /(?:\n)+|(?:^|\s)(?:[-*]|\d+\s*[\).:-])\s+|(?<=[.!?])\s+/g
+    )
+    .map((item) =>
+      item
+        .replace(/^(?:impression|conclusion|significant findings)\s*:?\s*/i, "")
+        .replace(/^(?:[-*]|\d+\s*[\).:-])\s*/, "")
+        .replace(/\s+/g, " ")
+        .trim()
+    )
+    .filter(Boolean);
+}
+
+function buildConclusionLines(
   conclusion: string,
-  gender: UsgGender,
   defaults: Required<UsgFieldOverrides>,
   options?: { forceLabel?: string }
 ) {
-  const label =
-    options?.forceLabel ||
-    (gender === "female" ? "Significant findings :" : "IMPRESSION:");
+  const label = options?.forceLabel || "IMPRESSION:";
   const trimmed = conclusion.trim();
-  if (!trimmed) {
-    return ensurePeriod(`${label} ${defaults.impression}`);
+  const fallback = defaults.impression.trim();
+  const body = (trimmed || fallback)
+    .replace(/^(impression|conclusion|significant findings)\s*:?\s*/i, "")
+    .trim();
+  const items = splitConclusionItems(body);
+
+  if (items.length > 1) {
+    return [label, ...items.map((item) => `- ${ensurePeriod(item)}`)];
   }
-  if (/^(impression|conclusion|significant findings)\b/i.test(trimmed)) {
-    return ensurePeriod(trimmed);
-  }
-  return ensurePeriod(`${label} ${trimmed}`);
+
+  const singleItem = items[0] || body || fallback;
+  return [ensurePeriod(`${label} ${singleItem}`)];
 }
 
 export function buildUsgReport(params: {
@@ -871,6 +915,20 @@ export function buildUsgReport(params: {
   if (bladderLine) {
     lines.push(`Urinary Bladder: ${bladderLine}`);
   }
+  const bladderPrevoidLine = formatBladderVolumeLine(
+    "Prevoid volume",
+    resolveField(overrides, defaults, "bladder_prevoid_volume_cc", suppressedFields)
+  );
+  if (bladderPrevoidLine) {
+    lines.push(bladderPrevoidLine);
+  }
+  const bladderPostvoidLine = formatBladderVolumeLine(
+    "Postvoid volume",
+    resolveField(overrides, defaults, "bladder_postvoid_volume_cc", suppressedFields)
+  );
+  if (bladderPostvoidLine) {
+    lines.push(bladderPostvoidLine);
+  }
 
   if (gender === "male") {
     const prostateMain = resolveField(
@@ -957,9 +1015,8 @@ export function buildUsgReport(params: {
   }
 
   lines.push(
-    buildConclusionLine(
+    ...buildConclusionLines(
       resolveField(overrides, defaults, "impression", suppressedFields),
-      gender,
       defaults
     )
   );
@@ -1115,6 +1172,20 @@ export function buildUsgKubReport(params: {
   if (bladderLine) {
     lines.push(`Urinary Bladder: ${bladderLine}`);
   }
+  const bladderPrevoidLine = formatBladderVolumeLine(
+    "Prevoid volume",
+    resolveField(overrides, defaults, "bladder_prevoid_volume_cc", suppressedFields)
+  );
+  if (bladderPrevoidLine) {
+    lines.push(bladderPrevoidLine);
+  }
+  const bladderPostvoidLine = formatBladderVolumeLine(
+    "Postvoid volume",
+    resolveField(overrides, defaults, "bladder_postvoid_volume_cc", suppressedFields)
+  );
+  if (bladderPostvoidLine) {
+    lines.push(bladderPostvoidLine);
+  }
 
   if (gender === "male") {
     const prostateMain = resolveField(
@@ -1173,9 +1244,8 @@ export function buildUsgKubReport(params: {
   }
 
   lines.push(
-    buildConclusionLine(
+    ...buildConclusionLines(
       resolveField(overrides, defaults, "impression", suppressedFields),
-      gender,
       defaults,
       { forceLabel: "IMPRESSION:" }
     )
