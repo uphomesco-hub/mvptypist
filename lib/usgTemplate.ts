@@ -653,6 +653,92 @@ function buildUsgKubHeaderTable(params: {
   ];
 }
 
+const KIDNEY_DIMENSION_SOURCE =
+  "~?\\d+(?:\\.\\d+)?\\s*(?:x|×)\\s*\\d+(?:\\.\\d+)?(?:\\s*(?:x|×)\\s*\\d+(?:\\.\\d+)?)?\\s*(?:mm|cm)?";
+const KIDNEY_DIMENSION_PATTERN = new RegExp(KIDNEY_DIMENSION_SOURCE, "i");
+const KIDNEY_DIMENSION_GLOBAL_PATTERN = new RegExp(
+  KIDNEY_DIMENSION_SOURCE,
+  "gi"
+);
+const KIDNEY_ABNORMAL_KEYWORDS_PATTERN =
+  /\b(calculus|calculi|stone|concretion|hydronephrosis|mass|lesion|cyst|scar|tumou?r|abscess|dilat)/i;
+
+function splitSentencesForKidneys(text: string) {
+  return text
+    .split(/(?<=[.!?])\s+|;\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function normalizeKidneyDimension(value: string) {
+  return value
+    .replace(/\s*(?:x|×)\s*/gi, " x ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractKidneyDimensionFromSizeText(
+  sizeText: string,
+  side: "right" | "left"
+) {
+  const normalized = sizeText.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+
+  const sideAnchor =
+    side === "right"
+      ? /\b(right|rt|rk)\b(?:\s*kidney)?/i
+      : /\b(left|lt|lk)\b(?:\s*kidney)?/i;
+  const sideMatch = sideAnchor.exec(normalized);
+  if (sideMatch) {
+    const windowText = normalized.slice(sideMatch.index, sideMatch.index + 140);
+    const localDimension = windowText.match(KIDNEY_DIMENSION_PATTERN)?.[0];
+    if (localDimension) {
+      return normalizeKidneyDimension(localDimension);
+    }
+  }
+
+  const allDimensions = normalized.match(KIDNEY_DIMENSION_GLOBAL_PATTERN) || [];
+  if (allDimensions.length >= 2) {
+    const selected = side === "right" ? allDimensions[0] : allDimensions[1];
+    if (!selected) return "";
+    return normalizeKidneyDimension(
+      selected
+    );
+  }
+  return "";
+}
+
+function classifyKidneySentenceLaterality(sentence: string) {
+  const hasRight = /\b(right|rt|rk)\b/i.test(sentence);
+  const hasLeft = /\b(left|lt|lk)\b/i.test(sentence);
+  const hasBoth = /\b(bilateral|both\s+kidneys?)\b/i.test(sentence);
+  if (hasBoth || (hasRight && hasLeft)) return "both";
+  if (hasRight) return "right";
+  if (hasLeft) return "left";
+  return "generic";
+}
+
+function isKidneyGenericNormalSentence(sentence: string) {
+  if (!/\bnormal\b/i.test(sentence)) return false;
+  if (!/\bsize\b/i.test(sentence)) return false;
+  if (!/\bshape\b/i.test(sentence)) return false;
+  if (!/\b(position|location)\b/i.test(sentence)) return false;
+  if (KIDNEY_ABNORMAL_KEYWORDS_PATTERN.test(sentence)) return false;
+  return true;
+}
+
+function uniqueSentenceList(sentences: string[]) {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const sentence of sentences) {
+    const key = sentence.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(sentence.trim());
+  }
+  return out;
+}
+
 function resolvePatientInfo(patient: UsgPatientInfo, gender: UsgGender) {
   const name = patient.name?.trim() || "________________";
   const genderLabel =
@@ -941,17 +1027,22 @@ export function buildUsgKubReport(params: {
   lines.push("USG KUB");
   lines.push("");
 
-  const kidneySize = resolveField(
+  const kidneySizeText = resolveField(
     overrides,
     defaults,
     "kidneys_size",
     suppressedFields
   );
-  if (kidneySize.trim()) {
-    lines.push(`Kidneys: ${ensurePeriod(kidneySize)}`);
-  }
+  const rightKidneySize = extractKidneyDimensionFromSizeText(
+    kidneySizeText,
+    "right"
+  );
+  const leftKidneySize = extractKidneyDimensionFromSizeText(
+    kidneySizeText,
+    "left"
+  );
 
-  const kidneyDetails = joinSentences([
+  const kidneyCombinedText = joinSentences([
     resolveField(overrides, defaults, "kidneys_main", suppressedFields),
     resolveField(overrides, defaults, "kidneys_cmd", suppressedFields),
     resolveField(
@@ -968,9 +1059,54 @@ export function buildUsgKubReport(params: {
       suppressedFields
     )
   ]);
-  if (kidneyDetails) {
-    lines.push(kidneySize.trim() ? kidneyDetails : `Kidneys: ${kidneyDetails}`);
+
+  const kidneySentencesRaw = splitSentencesForKidneys(kidneyCombinedText);
+  const hasUnavailableKidneyStatement = kidneySentencesRaw.some(
+    (sentence) =>
+      NOT_VISUALIZED_PATTERN.test(sentence) ||
+      NOT_ASSESSED_PATTERN.test(sentence) ||
+      ORGAN_SURGERY_PATTERNS.kidneys.test(sentence)
+  );
+  const kidneySentences = kidneySentencesRaw.filter(
+    (sentence) => !isKidneyGenericNormalSentence(sentence)
+  );
+
+  const rightSideSentences: string[] = [];
+  const leftSideSentences: string[] = [];
+  for (const sentence of kidneySentences) {
+    const laterality = classifyKidneySentenceLaterality(sentence);
+    if (laterality === "right") {
+      rightSideSentences.push(sentence);
+      continue;
+    }
+    if (laterality === "left") {
+      leftSideSentences.push(sentence);
+      continue;
+    }
+    rightSideSentences.push(sentence);
+    leftSideSentences.push(sentence);
   }
+
+  const rightStarter = hasUnavailableKidneyStatement
+    ? ""
+    : rightKidneySize
+    ? `is normal in size (${rightKidneySize}), shape, position.`
+    : "is normal in size, shape, position.";
+  const leftStarter = hasUnavailableKidneyStatement
+    ? ""
+    : leftKidneySize
+    ? `is normal in size (${leftKidneySize}), shape, position.`
+    : "is normal in size, shape, position.";
+
+  const rightLine = joinSentences(
+    uniqueSentenceList([rightStarter, ...rightSideSentences])
+  );
+  const leftLine = joinSentences(
+    uniqueSentenceList([leftStarter, ...leftSideSentences])
+  );
+
+  lines.push(`RIGHT KIDNEY: ${rightLine || "Not adequately visualized."}`);
+  lines.push(`LEFT KIDNEY: ${leftLine || "Not adequately visualized."}`);
 
   const bladderLine = joinSentences([
     resolveField(overrides, defaults, "bladder_main", suppressedFields),

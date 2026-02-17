@@ -95,6 +95,8 @@ const REPORT_HEADINGS = [
   "Pancreas:",
   "Spleen:",
   "Kidneys:",
+  "RIGHT KIDNEY:",
+  "LEFT KIDNEY:",
   "Urinary Bladder:",
   "Prostate:",
   "Uterus:",
@@ -182,6 +184,31 @@ function normalizeHeadingKey(heading: string) {
   return heading.replace(/[:\s]+/g, "").toLowerCase();
 }
 
+function isKubTemplateId(templateId: string) {
+  return templateId === "USG_KUB_MALE" || templateId === "USG_KUB_FEMALE";
+}
+
+function isKubKidneyHeading(heading: string) {
+  const normalized = heading.trim().toLowerCase();
+  return normalized === "right kidney:" || normalized === "left kidney:";
+}
+
+function isKubKidneySizeNormalSentence(sentence: string) {
+  const normalized = normalizeLine(sentence);
+  if (!/\bnormal\b/.test(normalized)) return false;
+  if (!/\bsize\b/.test(normalized)) return false;
+  if (!/\bshape\b/.test(normalized)) return false;
+  if (!/\b(position|location)\b/.test(normalized)) return false;
+  if (
+    /\b(calculus|calculi|stone|concretion|hydronephrosis|mass|lesion|cyst|scar|tumou?r|dilat)\b/.test(
+      normalized
+    )
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function splitIntoSentences(text: string) {
   return text
     .split(/(?<=[.!?])\s+|;\s+/)
@@ -249,9 +276,10 @@ function formatHeadingLine(params: {
 function formatHeadingLineWithSentenceDiff(params: {
   line: string;
   heading: string;
+  templateId: string;
   defaultSectionSentences: Record<string, Set<string>>;
 }) {
-  const { line, heading, defaultSectionSentences } = params;
+  const { line, heading, templateId, defaultSectionSentences } = params;
   const headingIndex = line.toLowerCase().indexOf(heading.toLowerCase());
   if (headingIndex === -1) {
     return escapeHtml(line);
@@ -275,8 +303,16 @@ function formatHeadingLineWithSentenceDiff(params: {
   }
 
   const tagged = sentences.map((sentence) => {
-    const isNormal =
+    let isNormal =
       normalSet.has(normalizeLine(sentence)) || isSkippableLine(sentence);
+    if (
+      !isNormal &&
+      isKubTemplateId(templateId) &&
+      isKubKidneyHeading(heading) &&
+      isKubKidneySizeNormalSentence(sentence)
+    ) {
+      isNormal = true;
+    }
     return { sentence, isNormal };
   });
   const hasAbnormal = tagged.some((item) => !item.isNormal);
@@ -326,6 +362,7 @@ function formatReportHtml(text: string, templateId: string) {
         return formatHeadingLineWithSentenceDiff({
           line,
           heading,
+          templateId,
           defaultSectionSentences
         });
       }
