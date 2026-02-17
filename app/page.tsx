@@ -85,6 +85,8 @@ const ISSUE_SUMMARY_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/admin-issue-summary`
   : "/api/admin-issue-summary";
 const ADMIN_EMAIL = "yashovrat56@gmail.com";
+const DEFAULT_PROFILE_IMAGE_URL =
+  "https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg";
 const REPORT_HEADINGS = [
   "Liver:",
   "Gall bladder:",
@@ -532,6 +534,7 @@ type DoctorProfile = {
   displayName: string;
   role: string;
   email: string;
+  avatarUrl: string;
 };
 
 type SavedCustomTemplate = {
@@ -652,7 +655,7 @@ export default function Home() {
   const [rawJson, setRawJson] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [activeView, setActiveView] = useState<
-    "dashboard" | "recording" | "report" | "admin"
+    "dashboard" | "recording" | "report" | "admin" | "profile"
   >("dashboard");
   const [customTemplateText, setCustomTemplateText] = useState("");
   const [customTemplateGender, setCustomTemplateGender] = useState<UsgGender>("male");
@@ -699,6 +702,11 @@ export default function Home() {
   const [issueSummaries, setIssueSummaries] = useState<
     Record<string, IssueSummaryPayload>
   >({});
+  const [isMobileProfileMenuOpen, setIsMobileProfileMenuOpen] = useState(false);
+  const [profileDraftName, setProfileDraftName] = useState("");
+  const [profileAvatarFile, setProfileAvatarFile] = useState<File | null>(null);
+  const [profileAvatarPreviewUrl, setProfileAvatarPreviewUrl] = useState("");
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -715,6 +723,8 @@ export default function Home() {
   const customTemplateSaveTimerRef = useRef<number | null>(null);
   const worklistSectionRef = useRef<HTMLElement | null>(null);
   const wasSearchModeRef = useRef(false);
+  const mobileProfileMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileAvatarObjectUrlRef = useRef<string | null>(null);
 
   const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
   const selectedTemplate = useMemo(
@@ -823,6 +833,13 @@ export default function Home() {
     doctorProfile?.displayName ||
     currentUser?.displayName ||
     (currentUser?.email ? currentUser.email.split("@")[0] : "Doctor");
+  const doctorAvatarUrl =
+    String(
+      doctorProfile?.avatarUrl ||
+        currentUser?.photoURL ||
+        DEFAULT_PROFILE_IMAGE_URL
+    ).trim() || DEFAULT_PROFILE_IMAGE_URL;
+  const profileAvatarDisplayUrl = profileAvatarPreviewUrl || doctorAvatarUrl;
   const isSearchMode = Boolean(searchQuery.trim());
   const isAdmin =
     String(currentUser?.email || "").trim().toLowerCase() === ADMIN_EMAIL;
@@ -907,10 +924,46 @@ export default function Home() {
   }, [error]);
 
   useEffect(() => {
+    const fallbackName =
+      doctorProfile?.displayName ||
+      currentUser?.displayName ||
+      (currentUser?.email ? currentUser.email.split("@")[0] : "");
+    setProfileDraftName(fallbackName);
+  }, [doctorProfile?.displayName, currentUser?.displayName, currentUser?.email]);
+
+  useEffect(() => {
+    return () => {
+      if (profileAvatarObjectUrlRef.current) {
+        URL.revokeObjectURL(profileAvatarObjectUrlRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileProfileMenuOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!mobileProfileMenuRef.current?.contains(target)) {
+        setIsMobileProfileMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isMobileProfileMenuOpen]);
+
+  useEffect(() => {
     if (activeView === "admin" && !isAdmin) {
       setActiveView("dashboard");
     }
   }, [activeView, isAdmin]);
+
+  useEffect(() => {
+    if (activeView !== "dashboard") {
+      setIsMobileProfileMenuOpen(false);
+    }
+  }, [activeView]);
 
   useEffect(() => {
     if (!firebaseClient) {
@@ -939,7 +992,8 @@ export default function Home() {
           displayName:
             String(existing?.displayName || "").trim() || fallbackName,
           role: String(existing?.role || "Radiologist"),
-          email: String(existing?.email || user.email || "")
+          email: String(existing?.email || user.email || ""),
+          avatarUrl: String(existing?.avatarUrl || user.photoURL || "")
         };
         await setDoc(
           profileRef,
@@ -947,6 +1001,7 @@ export default function Home() {
             displayName: profile.displayName,
             role: profile.role,
             email: profile.email,
+            avatarUrl: profile.avatarUrl,
             updatedAt: serverTimestamp(),
             createdAt: existing?.createdAt || serverTimestamp()
           },
@@ -1777,6 +1832,13 @@ export default function Home() {
     if (!firebaseClient) return;
     try {
       await signOut(firebaseClient.auth);
+      if (profileAvatarObjectUrlRef.current) {
+        URL.revokeObjectURL(profileAvatarObjectUrlRef.current);
+        profileAvatarObjectUrlRef.current = null;
+      }
+      setProfileAvatarPreviewUrl("");
+      setProfileAvatarFile(null);
+      setIsMobileProfileMenuOpen(false);
       setAllowRecordingFromReport(false);
       setTemplateId("");
       setAudioFile(null);
@@ -1796,6 +1858,98 @@ export default function Home() {
       setActiveView("dashboard");
     } catch (signOutError) {
       setError(firebaseErrorMessage(signOutError));
+    }
+  };
+
+  const handleOpenProfileView = () => {
+    setIsMobileProfileMenuOpen(false);
+    setActiveView("profile");
+  };
+
+  const handleProfileImageChange = (
+    event: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please select an image file.");
+      event.target.value = "";
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError("Image size should be under 5 MB.");
+      event.target.value = "";
+      return;
+    }
+    if (profileAvatarObjectUrlRef.current) {
+      URL.revokeObjectURL(profileAvatarObjectUrlRef.current);
+    }
+    const objectUrl = URL.createObjectURL(file);
+    profileAvatarObjectUrlRef.current = objectUrl;
+    setProfileAvatarPreviewUrl(objectUrl);
+    setProfileAvatarFile(file);
+    event.target.value = "";
+  };
+
+  const handleSaveProfile = async () => {
+    if (!firebaseClient || !currentUser) {
+      setError("Please sign in to update your profile.");
+      return;
+    }
+    const nextName = profileDraftName.trim();
+    if (!nextName) {
+      setError("Display name is required.");
+      return;
+    }
+    setIsSavingProfile(true);
+    setError(null);
+    try {
+      let avatarUrl = doctorAvatarUrl;
+      if (profileAvatarFile) {
+        const avatarPath = `users/${currentUser.uid}/profile/avatar-${Date.now()}-${fileNameSafe(
+          profileAvatarFile.name || "avatar"
+        )}`;
+        const avatarRef = storageRef(firebaseClient.storage, avatarPath);
+        await uploadBytes(avatarRef, profileAvatarFile, {
+          contentType: profileAvatarFile.type || "image/jpeg"
+        });
+        avatarUrl = await getDownloadURL(avatarRef);
+      }
+
+      const nextRole = doctorProfile?.role || "Radiologist";
+      const nextEmail = currentUser.email || doctorProfile?.email || "";
+      await setDoc(
+        doc(firebaseClient.db, `users/${currentUser.uid}/profile/main`),
+        {
+          displayName: nextName,
+          role: nextRole,
+          email: nextEmail,
+          avatarUrl,
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
+      await updateProfile(currentUser, {
+        displayName: nextName,
+        photoURL: avatarUrl
+      });
+      setDoctorProfile({
+        displayName: nextName,
+        role: nextRole,
+        email: nextEmail,
+        avatarUrl
+      });
+      if (profileAvatarObjectUrlRef.current) {
+        URL.revokeObjectURL(profileAvatarObjectUrlRef.current);
+        profileAvatarObjectUrlRef.current = null;
+      }
+      setProfileAvatarPreviewUrl("");
+      setProfileAvatarFile(null);
+      setActiveView("dashboard");
+    } catch (profileError) {
+      setError(firebaseErrorMessage(profileError));
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -2664,11 +2818,15 @@ export default function Home() {
             )}
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-            <div className="flex items-center gap-3 p-2">
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+              onClick={handleOpenProfileView}
+            >
               <img
                 className="h-10 w-10 rounded-full object-cover shadow-sm"
                 alt="Radiologist"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+                src={doctorAvatarUrl}
               />
               {!isSidebarCollapsed && (
                 <div className="overflow-hidden">
@@ -2678,7 +2836,7 @@ export default function Home() {
                   </p>
                 </div>
               )}
-            </div>
+            </button>
             {!isSidebarCollapsed && currentUser && (
               <button
                 className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -2702,26 +2860,53 @@ export default function Home() {
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
-            <div className="ml-3 flex items-center gap-2 md:hidden">
-              {isAdmin && (
-                <button
-                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  onClick={() => setActiveView("admin")}
-                  title="Admin Issues"
-                >
-                  <span className="material-icons-round text-sm">bug_report</span>
-                  {adminIssueCount}
-                </button>
-              )}
-              {currentUser && (
-                <button
-                  className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  onClick={handleSignOut}
-                  title="Sign Out"
-                >
-                  <span className="material-icons-round text-sm">logout</span>
-                  Sign Out
-                </button>
+            <div
+              ref={mobileProfileMenuRef}
+              className="relative ml-3 flex items-center md:hidden"
+            >
+              <button
+                className="inline-flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-900"
+                onClick={() => setIsMobileProfileMenuOpen((current) => !current)}
+                title="Profile menu"
+              >
+                <img
+                  src={doctorAvatarUrl}
+                  alt="Profile"
+                  className="h-full w-full rounded-full object-cover"
+                />
+              </button>
+              {isMobileProfileMenuOpen && (
+                <div className="absolute right-0 top-11 z-30 w-44 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                    onClick={handleOpenProfileView}
+                  >
+                    <span className="material-icons-round text-sm">person</span>
+                    Edit Profile
+                  </button>
+                  {isAdmin && (
+                    <button
+                      className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                      onClick={() => {
+                        setIsMobileProfileMenuOpen(false);
+                        setActiveView("admin");
+                      }}
+                    >
+                      <span className="material-icons-round text-sm">bug_report</span>
+                      Admin Issues ({adminIssueCount})
+                    </button>
+                  )}
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20"
+                    onClick={() => {
+                      setIsMobileProfileMenuOpen(false);
+                      void handleSignOut();
+                    }}
+                  >
+                    <span className="material-icons-round text-sm">logout</span>
+                    Logout
+                  </button>
+                </div>
               )}
             </div>
             <div className="ml-4 hidden items-center gap-6 md:flex">
@@ -3386,6 +3571,207 @@ export default function Home() {
     );
   }
 
+  if (activeView === "profile") {
+    return (
+      <div className="flex h-[100dvh] overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+        <aside
+          className={`hidden ${sidebarWidthClass} flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
+        >
+          <div className="flex items-center justify-between p-4">
+            <div className="flex items-center gap-2 text-primary">
+              <span className="material-icons-round text-3xl">analytics</span>
+              {!isSidebarCollapsed && (
+                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={() => setIsSidebarCollapsed((current) => !current)}
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <span className="material-icons-round text-base">
+                {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+              </span>
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 px-3">
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => setActiveView("dashboard")}
+            >
+              <span className="material-icons-round">dashboard</span>
+              {!isSidebarCollapsed && "Dashboard"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => canStartNewFromDashboard && startNewReportSession()}
+              disabled={!canStartNewFromDashboard}
+            >
+              <span className="material-icons-round">mic</span>
+              {!isSidebarCollapsed && "Recording"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+              disabled={!canResumeReportFromDashboard}
+            >
+              <span className="material-icons-round">edit_note</span>
+              {!isSidebarCollapsed && "Report Editor"}
+            </button>
+            {isAdmin && (
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => setActiveView("admin")}
+              >
+                <span className="material-icons-round">bug_report</span>
+                {!isSidebarCollapsed &&
+                  `Admin Issues${adminIssueCount ? ` (${adminIssueCount})` : ""}`}
+              </button>
+            )}
+            <button className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-left font-medium text-primary">
+              <span className="material-icons-round">person</span>
+              {!isSidebarCollapsed && "Profile"}
+            </button>
+          </nav>
+          <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+              onClick={handleOpenProfileView}
+            >
+              <img
+                className="h-10 w-10 rounded-full object-cover shadow-sm"
+                alt="Radiologist"
+                src={doctorAvatarUrl}
+              />
+              {!isSidebarCollapsed && (
+                <div className="overflow-hidden">
+                  <p className="truncate text-sm font-semibold">{doctorName}</p>
+                  <p className="truncate text-xs text-slate-500">
+                    {doctorProfile?.role || "Radiologist"}
+                  </p>
+                </div>
+              )}
+            </button>
+            {!isSidebarCollapsed && currentUser && (
+              <button
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </button>
+            )}
+          </div>
+        </aside>
+
+        <main className="flex-1 overflow-y-auto">
+          <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 md:px-8">
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 lg:hidden"
+                onClick={() => setActiveView("dashboard")}
+              >
+                Dashboard
+              </button>
+              <div>
+                <h1 className="text-base font-bold text-slate-900 dark:text-white md:text-lg">
+                  Edit Profile
+                </h1>
+                <p className="text-xs text-slate-500">Update your name and profile image.</p>
+              </div>
+            </div>
+            <button
+              className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+              onClick={() => setActiveView("dashboard")}
+            >
+              Back
+            </button>
+          </header>
+
+          <div className="mx-auto w-full max-w-3xl p-4 md:p-8">
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:p-6">
+              <div className="flex flex-col items-center gap-4 sm:flex-row">
+                <img
+                  className="h-24 w-24 rounded-full border border-slate-200 object-cover shadow-sm dark:border-slate-700"
+                  src={profileAvatarDisplayUrl}
+                  alt="Profile preview"
+                />
+                <div className="w-full">
+                  <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Profile Image
+                  </p>
+                  <p className="text-xs text-slate-500">
+                    JPG/PNG/WebP up to 5 MB.
+                  </p>
+                  <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
+                    <span className="material-icons-round text-sm">upload</span>
+                    Upload Image
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleProfileImageChange}
+                    />
+                  </label>
+                  {profileAvatarFile && (
+                    <p className="mt-2 truncate text-xs text-slate-500">
+                      Selected: {profileAvatarFile.name}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-6">
+                <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
+                  Display Name
+                </label>
+                <input
+                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
+                  value={profileDraftName}
+                  onChange={(event) => setProfileDraftName(event.target.value)}
+                  placeholder="Dr. Name"
+                />
+                <p className="mt-2 text-xs text-slate-500">
+                  Email: {doctorProfile?.email || currentUser?.email || "N/A"}
+                </p>
+              </div>
+
+              <div className="mt-6 flex flex-wrap items-center gap-2">
+                <button
+                  className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white shadow-md shadow-primary/20 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={handleSaveProfile}
+                  disabled={isSavingProfile}
+                >
+                  <span className="material-icons-round text-base">
+                    {isSavingProfile ? "autorenew" : "save"}
+                  </span>
+                  {isSavingProfile ? "Saving..." : "Save Profile"}
+                </button>
+                <button
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={() => setActiveView("dashboard")}
+                  disabled={isSavingProfile}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-100 dark:border-red-900 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
+                  onClick={handleSignOut}
+                  disabled={isSavingProfile}
+                >
+                  Logout
+                </button>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        {errorToast}
+      </div>
+    );
+  }
+
   if (activeView === "admin" && isAdmin) {
     return (
       <div className="flex h-[100dvh] overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
@@ -3440,11 +3826,15 @@ export default function Home() {
             </button>
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-            <div className="flex items-center gap-3 p-2">
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+              onClick={handleOpenProfileView}
+            >
               <img
                 className="h-10 w-10 rounded-full object-cover shadow-sm"
                 alt="Radiologist"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+                src={doctorAvatarUrl}
               />
               {!isSidebarCollapsed && (
                 <div className="overflow-hidden">
@@ -3454,7 +3844,7 @@ export default function Home() {
                   </p>
                 </div>
               )}
-            </div>
+            </button>
             {!isSidebarCollapsed && currentUser && (
               <button
                 className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -3787,11 +4177,15 @@ export default function Home() {
               )}
             </nav>
             <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-              <div className="flex items-center gap-3 p-2">
+              <button
+                type="button"
+                className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+                onClick={handleOpenProfileView}
+              >
                 <img
                   className="h-10 w-10 rounded-full object-cover shadow-sm"
                   alt="Radiologist"
-                  src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+                  src={doctorAvatarUrl}
                 />
                 {!isSidebarCollapsed && (
                   <div className="overflow-hidden">
@@ -3799,7 +4193,7 @@ export default function Home() {
                     <p className="truncate text-xs text-slate-500">{doctorProfile?.role || "Radiologist"}</p>
                   </div>
                 )}
-              </div>
+              </button>
               {!isSidebarCollapsed && currentUser && (
                 <button
                   className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -4228,11 +4622,15 @@ export default function Home() {
             )}
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
-            <div className="flex items-center gap-3 p-2">
+            <button
+              type="button"
+              className="flex w-full items-center gap-3 rounded-lg p-2 text-left hover:bg-slate-100 dark:hover:bg-slate-800"
+              onClick={handleOpenProfileView}
+            >
               <img
                 className="h-10 w-10 rounded-full object-cover shadow-sm"
                 alt="Radiologist"
-                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+                src={doctorAvatarUrl}
               />
               {!isSidebarCollapsed && (
                 <div className="overflow-hidden">
@@ -4240,7 +4638,7 @@ export default function Home() {
                   <p className="truncate text-xs text-slate-500">{doctorProfile?.role || "Radiologist"}</p>
                 </div>
               )}
-            </div>
+            </button>
             {!isSidebarCollapsed && currentUser && (
               <button
                 className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
