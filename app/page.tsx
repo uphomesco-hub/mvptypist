@@ -707,6 +707,7 @@ export default function Home() {
   const [profileAvatarFile, setProfileAvatarFile] = useState<File | null>(null);
   const [profileAvatarPreviewUrl, setProfileAvatarPreviewUrl] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
+  const [isProfileImageMenuOpen, setIsProfileImageMenuOpen] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -725,6 +726,9 @@ export default function Home() {
   const wasSearchModeRef = useRef(false);
   const mobileProfileMenuRef = useRef<HTMLDivElement | null>(null);
   const profileAvatarObjectUrlRef = useRef<string | null>(null);
+  const profileImageMenuRef = useRef<HTMLDivElement | null>(null);
+  const profileImageUploadInputRef = useRef<HTMLInputElement | null>(null);
+  const profileImageCameraInputRef = useRef<HTMLInputElement | null>(null);
 
   const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
   const selectedTemplate = useMemo(
@@ -954,6 +958,20 @@ export default function Home() {
   }, [isMobileProfileMenuOpen]);
 
   useEffect(() => {
+    if (!isProfileImageMenuOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (!profileImageMenuRef.current?.contains(target)) {
+        setIsProfileImageMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [isProfileImageMenuOpen]);
+
+  useEffect(() => {
     if (activeView === "admin" && !isAdmin) {
       setActiveView("dashboard");
     }
@@ -962,6 +980,12 @@ export default function Home() {
   useEffect(() => {
     if (activeView !== "dashboard") {
       setIsMobileProfileMenuOpen(false);
+    }
+  }, [activeView]);
+
+  useEffect(() => {
+    if (activeView !== "profile") {
+      setIsProfileImageMenuOpen(false);
     }
   }, [activeView]);
 
@@ -1839,6 +1863,7 @@ export default function Home() {
       setProfileAvatarPreviewUrl("");
       setProfileAvatarFile(null);
       setIsMobileProfileMenuOpen(false);
+      setIsProfileImageMenuOpen(false);
       setAllowRecordingFromReport(false);
       setTemplateId("");
       setAudioFile(null);
@@ -1866,9 +1891,19 @@ export default function Home() {
     setActiveView("profile");
   };
 
+  const triggerProfileImagePicker = (mode: "camera" | "library") => {
+    setIsProfileImageMenuOpen(false);
+    if (mode === "camera") {
+      profileImageCameraInputRef.current?.click();
+      return;
+    }
+    profileImageUploadInputRef.current?.click();
+  };
+
   const handleProfileImageChange = (
     event: React.ChangeEvent<HTMLInputElement>
   ) => {
+    setIsProfileImageMenuOpen(false);
     const file = event.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
@@ -1945,6 +1980,7 @@ export default function Home() {
       }
       setProfileAvatarPreviewUrl("");
       setProfileAvatarFile(null);
+      setIsProfileImageMenuOpen(false);
       setActiveView("dashboard");
     } catch (profileError) {
       setError(firebaseErrorMessage(profileError));
@@ -3692,30 +3728,67 @@ export default function Home() {
           <div className="mx-auto w-full max-w-3xl p-4 md:p-8">
             <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900 md:p-6">
               <div className="flex flex-col items-center gap-4 sm:flex-row">
-                <img
-                  className="h-24 w-24 rounded-full border border-slate-200 object-cover shadow-sm dark:border-slate-700"
-                  src={profileAvatarDisplayUrl}
-                  alt="Profile preview"
-                />
+                <div ref={profileImageMenuRef} className="relative">
+                  <button
+                    type="button"
+                    className="group relative h-24 w-24 overflow-hidden rounded-full border border-slate-200 shadow-sm dark:border-slate-700"
+                    onClick={() => setIsProfileImageMenuOpen((current) => !current)}
+                    title="Change profile image"
+                  >
+                    <img
+                      className="h-full w-full object-cover transition group-hover:scale-[1.02]"
+                      src={profileAvatarDisplayUrl}
+                      alt="Profile preview"
+                    />
+                    <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-slate-900/70 via-transparent to-transparent pb-2 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100">
+                      Change
+                    </div>
+                  </button>
+                  {isProfileImageMenuOpen && (
+                    <div className="absolute left-1/2 top-28 z-20 w-44 -translate-x-1/2 rounded-xl border border-slate-200 bg-white p-1.5 shadow-xl dark:border-slate-700 dark:bg-slate-900">
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                        onClick={() => triggerProfileImagePicker("camera")}
+                      >
+                        <span className="material-icons-round text-sm">photo_camera</span>
+                        Take Picture
+                      </button>
+                      <button
+                        type="button"
+                        className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                        onClick={() => triggerProfileImagePicker("library")}
+                      >
+                        <span className="material-icons-round text-sm">image</span>
+                        Upload Image
+                      </button>
+                    </div>
+                  )}
+                  <input
+                    ref={profileImageUploadInputRef}
+                    type="file"
+                    accept="image/*"
+                    className="hidden"
+                    onChange={handleProfileImageChange}
+                  />
+                  <input
+                    ref={profileImageCameraInputRef}
+                    type="file"
+                    accept="image/*"
+                    capture="environment"
+                    className="hidden"
+                    onChange={handleProfileImageChange}
+                  />
+                </div>
                 <div className="w-full">
                   <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                     Profile Image
                   </p>
                   <p className="text-xs text-slate-500">
-                    JPG/PNG/WebP up to 5 MB.
+                    Click the image to take a picture or upload one (up to 5 MB).
                   </p>
-                  <label className="mt-3 inline-flex cursor-pointer items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800">
-                    <span className="material-icons-round text-sm">upload</span>
-                    Upload Image
-                    <input
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleProfileImageChange}
-                    />
-                  </label>
                   {profileAvatarFile && (
-                    <p className="mt-2 truncate text-xs text-slate-500">
+                    <p className="mt-3 truncate text-xs text-slate-500">
                       Selected: {profileAvatarFile.name}
                     </p>
                   )}
