@@ -3701,7 +3701,7 @@ export default function Home() {
           </div>
         </aside>
 
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-x-hidden overflow-y-auto">
           <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 md:px-8">
             <div className="flex items-center gap-3">
               <button
@@ -4162,20 +4162,24 @@ export default function Home() {
     return (
       <div className="flex h-screen flex-col overflow-hidden bg-background-light text-slate-800 dark:bg-background-dark dark:text-slate-200">
         <header className={`${sidebarOffsetClass} sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 dark:border-slate-800 dark:bg-slate-900 md:px-8`}>
-          <div className="flex items-center gap-6">
+          <div className="flex min-w-0 items-center gap-3 md:gap-6">
             <button
               className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
               onClick={() => setActiveView("dashboard")}
             >
               Dashboard
             </button>
-            <div className="flex flex-col">
+            <div className="min-w-0 flex flex-col">
               <span className="text-xs font-medium uppercase text-slate-500">Template</span>
-              <span className="text-sm font-semibold">{selectedTemplate?.title || "Not selected"}</span>
+              <span className="max-w-[8.5rem] truncate text-sm font-semibold sm:max-w-[12rem] md:max-w-none">
+                {selectedTemplate?.title || "Not selected"}
+              </span>
             </div>
-            <div className="flex flex-col">
+            <div className="min-w-0 flex flex-col">
               <span className="text-xs font-medium uppercase text-slate-500">Patient</span>
-              <span className="text-sm font-semibold">{activeReport?.patientName || "Not set"}</span>
+              <span className="max-w-[8.5rem] truncate text-sm font-semibold sm:max-w-[12rem] md:max-w-none">
+                {activeReport?.patientName || "Not set"}
+              </span>
             </div>
             <div className="hidden flex-col md:flex">
               <span className="text-xs font-medium uppercase text-slate-500">Status</span>
@@ -4584,20 +4588,24 @@ export default function Home() {
   return (
     <div className="flex h-[100dvh] min-h-screen flex-col overflow-hidden bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100 md:h-screen">
       <header className={`${sidebarOffsetClass} sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 md:px-8 dark:border-slate-800 dark:bg-slate-900`}>
-        <div className="flex items-center gap-6">
+        <div className="flex min-w-0 items-center gap-3 md:gap-6">
           <button
             className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
             onClick={() => setActiveView("dashboard")}
           >
             Dashboard
           </button>
-          <div className="flex flex-col">
+          <div className="min-w-0 flex flex-col">
             <span className="text-xs font-medium uppercase text-slate-500">Template</span>
-            <span className="text-sm font-semibold">{selectedTemplate?.title || "Not selected"}</span>
+            <span className="max-w-[8.5rem] truncate text-sm font-semibold sm:max-w-[12rem] md:max-w-none">
+              {selectedTemplate?.title || "Not selected"}
+            </span>
           </div>
-          <div className="flex flex-col">
+          <div className="min-w-0 flex flex-col">
             <span className="text-xs font-medium uppercase text-slate-500">Patient</span>
-            <span className="text-sm font-semibold">{activeReport?.patientName || "Unknown Patient"}</span>
+            <span className="max-w-[8.5rem] truncate text-sm font-semibold sm:max-w-[12rem] md:max-w-none">
+              {activeReport?.patientName || "Unknown Patient"}
+            </span>
           </div>
           <div className="hidden flex-col md:flex">
             <span className="text-xs font-medium uppercase text-slate-500">Status</span>
