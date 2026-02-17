@@ -3740,7 +3740,7 @@ export default function Home() {
                       src={profileAvatarDisplayUrl}
                       alt="Profile preview"
                     />
-                    <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-slate-900/70 via-transparent to-transparent pb-2 text-[10px] font-semibold text-white opacity-0 transition group-hover:opacity-100">
+                    <div className="absolute inset-0 flex items-end justify-center bg-gradient-to-t from-slate-900/70 via-transparent to-transparent pb-2 text-[10px] font-semibold text-white">
                       Change
                     </div>
                   </button>
