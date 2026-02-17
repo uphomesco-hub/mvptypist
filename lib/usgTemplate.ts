@@ -40,6 +40,32 @@ export type UsgFieldOverrides = {
   correlate_clinically?: string;
 };
 
+export type UsgOrganState =
+  | "visualized"
+  | "limited_visualization"
+  | "not_visualized"
+  | "not_assessed"
+  | "surgically_absent";
+
+export type UsgOrganKey =
+  | "liver"
+  | "gallbladder"
+  | "pancreas"
+  | "spleen"
+  | "kidneys"
+  | "bladder"
+  | "prostate"
+  | "uterus"
+  | "adnexa";
+
+export type UsgOrganStateMap = Record<UsgOrganKey, UsgOrganState>;
+
+export type UsgConsistencyNormalization = {
+  overrides: UsgFieldOverrides;
+  suppressedFields: (keyof UsgFieldOverrides)[];
+  organStates: UsgOrganStateMap;
+};
+
 const USG_END_OF_REPORT_LINE_MALE =
   "--------------------------------------------------------------END OF REPORT --------------------------------------------------------------";
 const USG_END_OF_REPORT_LINE_FEMALE =
@@ -116,17 +142,438 @@ export const USG_FIELD_KEYS = Object.keys(
   USG_DEFAULT_FIELDS_MALE
 ) as (keyof UsgFieldOverrides)[];
 
+const NOT_VISUALIZED_FRAGMENT =
+  "(?:not\\s+(?:well\\s+)?visuali[sz]ed|not\\s+seen|not\\s+appreciable|non[-\\s]?visuali[sz]ed|poorly\\s+visuali[sz]ed|could\\s+not\\s+be\\s+visuali[sz]ed)";
+const NOT_ASSESSED_FRAGMENT =
+  "(?:not\\s+assessed|cannot\\s+be\\s+assessed|assessment\\s+is\\s+limited|limited\\s+evaluation|suboptimal\\s+evaluation)";
+const LIMITED_VISUALIZATION_FRAGMENT =
+  "(?:partially\\s+visuali[sz]ed|partially\\s+distended|underdistended|contracted|poor\\s+acoustic\\s+window|bowel\\s+gas)";
+
+const NOT_VISUALIZED_PATTERN = new RegExp(NOT_VISUALIZED_FRAGMENT, "i");
+const NOT_ASSESSED_PATTERN = new RegExp(NOT_ASSESSED_FRAGMENT, "i");
+const LIMITED_VISUALIZATION_PATTERN = new RegExp(
+  LIMITED_VISUALIZATION_FRAGMENT,
+  "i"
+);
+const LOCAL_SURGICAL_STATUS_PATTERN = /\b(surgically\s+absent|removed)\b/i;
+
+const ORGAN_TERMS: Record<UsgOrganKey, string[]> = {
+  liver: ["liver", "hepatic"],
+  gallbladder: ["gall bladder", "gallbladder", "gb"],
+  pancreas: ["pancreas", "pancreatic"],
+  spleen: ["spleen", "splenic"],
+  kidneys: ["kidney", "kidneys", "renal"],
+  bladder: ["bladder", "urinary bladder"],
+  prostate: ["prostate"],
+  uterus: ["uterus", "uterine", "myometrium", "endometrium", "endometrial"],
+  adnexa: ["adnexa", "adenexa", "ovary", "ovaries", "adnexal"]
+};
+
+const ORGAN_SURGERY_PATTERNS: Record<UsgOrganKey, RegExp> = {
+  liver: /\b(hepatectomy|post[-\s]?hepatectomy|liver\s+resection)\b/i,
+  gallbladder: /\b(cholecystectomy|post[-\s]?cholecystectomy)\b/i,
+  pancreas: /\b(pancreatectomy|post[-\s]?pancreatectomy)\b/i,
+  spleen: /\b(splenectomy|post[-\s]?splenectomy)\b/i,
+  kidneys: /\b(nephrectomy|post[-\s]?nephrectomy)\b/i,
+  bladder: /\b(cystectomy|post[-\s]?cystectomy)\b/i,
+  prostate: /\b(prostatectomy|post[-\s]?prostatectomy)\b/i,
+  uterus: /\b(hysterectomy|post[-\s]?hysterectomy)\b/i,
+  adnexa: /\b(oophorectomy|salpingo[-\s]?oophorectomy|post[-\s]?oophorectomy)\b/i
+};
+
 function ensurePeriod(text: string) {
   const trimmed = text.trim();
   if (!trimmed) return "";
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
+function escapeRegExp(text: string) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function hasText(value: unknown) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function normalizeImpressionTerminology(text: string) {
+  return text
+    .replace(/\bcystisis\b/gi, "cystitis")
+    .replace(/\bcholilithiasis\b/gi, "cholelithiasis")
+    .replace(/\bstones\b/gi, "calculi")
+    .replace(/\bstone\b/gi, "calculus")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasBladderWallThickening(text: string) {
+  if (!text.trim()) return false;
+  return /(?:bladder\s*wall[^.\n]{0,60}thicken|wall\s+is\s+diffusely\s+thickened|diffuse\s+bladder\s+wall\s+thickening)/i.test(
+    text
+  );
+}
+
+function collectText(fields: UsgFieldOverrides, keys: (keyof UsgFieldOverrides)[]) {
+  return keys
+    .map((key) => fields[key])
+    .filter(hasText)
+    .map((value) => String(value).trim())
+    .join(" ");
+}
+
+function buildOrganPhrasePattern(organKey: UsgOrganKey, phraseFragment: string) {
+  const terms = ORGAN_TERMS[organKey];
+  const termPattern = terms.map((term) => escapeRegExp(term)).join("|");
+  return new RegExp(
+    `(?:\\b(?:${termPattern})\\b[^.\\n]{0,80}${phraseFragment}|${phraseFragment}[^.\\n]{0,80}\\b(?:${termPattern})\\b)`,
+    "i"
+  );
+}
+
+function detectStateFromLocalText(
+  text: string,
+  surgeryPattern: RegExp
+): UsgOrganState | null {
+  if (!text.trim()) return null;
+  if (surgeryPattern.test(text) || LOCAL_SURGICAL_STATUS_PATTERN.test(text)) {
+    return "surgically_absent";
+  }
+  if (NOT_VISUALIZED_PATTERN.test(text)) {
+    return "not_visualized";
+  }
+  if (NOT_ASSESSED_PATTERN.test(text)) {
+    return "not_assessed";
+  }
+  if (LIMITED_VISUALIZATION_PATTERN.test(text)) {
+    return "limited_visualization";
+  }
+  return null;
+}
+
+function detectStateFromGlobalText(
+  text: string,
+  organKey: UsgOrganKey,
+  surgeryPattern: RegExp
+): UsgOrganState | null {
+  if (!text.trim()) return null;
+  if (surgeryPattern.test(text)) {
+    return "surgically_absent";
+  }
+  if (buildOrganPhrasePattern(organKey, NOT_VISUALIZED_FRAGMENT).test(text)) {
+    return "not_visualized";
+  }
+  if (buildOrganPhrasePattern(organKey, NOT_ASSESSED_FRAGMENT).test(text)) {
+    return "not_assessed";
+  }
+  if (
+    buildOrganPhrasePattern(organKey, LIMITED_VISUALIZATION_FRAGMENT).test(text)
+  ) {
+    return "limited_visualization";
+  }
+  return null;
+}
+
+function inferOrganState(params: {
+  organ: UsgOrganKey;
+  localText: string;
+  globalText: string;
+}): UsgOrganState {
+  const surgeryPattern = ORGAN_SURGERY_PATTERNS[params.organ];
+  const local = detectStateFromLocalText(params.localText, surgeryPattern);
+  if (local) return local;
+  const global = detectStateFromGlobalText(
+    params.globalText,
+    params.organ,
+    surgeryPattern
+  );
+  if (global) return global;
+  return "visualized";
+}
+
+export function isHighRiskUsgOrganState(state: UsgOrganState) {
+  return state !== "visualized";
+}
+
+function cloneAndTrimOverrides(overrides: UsgFieldOverrides) {
+  const next: UsgFieldOverrides = {};
+  for (const key of USG_FIELD_KEYS) {
+    const value = overrides[key];
+    if (typeof value !== "string") continue;
+    next[key] = value.trim();
+  }
+  return next;
+}
+
+function enforceOrganSuppression(params: {
+  overrides: UsgFieldOverrides;
+  suppressed: Set<keyof UsgFieldOverrides>;
+  state: UsgOrganState;
+  mainField: keyof UsgFieldOverrides;
+  detailFields: (keyof UsgFieldOverrides)[];
+}) {
+  const { overrides, suppressed, state, mainField, detailFields } = params;
+  if (!isHighRiskUsgOrganState(state)) return;
+
+  for (const field of detailFields) {
+    overrides[field] = "";
+    suppressed.add(field);
+  }
+
+  if (!hasText(overrides[mainField])) {
+    suppressed.add(mainField);
+  }
+}
+
+export function normalizeUsgOverridesForConsistency(params: {
+  overrides?: UsgFieldOverrides;
+  gender: UsgGender;
+}): UsgConsistencyNormalization {
+  const gender = params.gender;
+  const normalizedOverrides = cloneAndTrimOverrides(params.overrides || {});
+  const suppressed = new Set<keyof UsgFieldOverrides>();
+  const globalText = collectText(normalizedOverrides, ["impression"]);
+
+  const organStates: UsgOrganStateMap = {
+    liver: inferOrganState({
+      organ: "liver",
+      localText: collectText(normalizedOverrides, [
+        "liver_main",
+        "liver_focal_lesion",
+        "liver_hepatic_veins",
+        "liver_ihbr",
+        "liver_portal_vein"
+      ]),
+      globalText
+    }),
+    gallbladder: inferOrganState({
+      organ: "gallbladder",
+      localText: collectText(normalizedOverrides, [
+        "gallbladder_main",
+        "gallbladder_calculus_sludge",
+        "cbd_main"
+      ]),
+      globalText
+    }),
+    pancreas: inferOrganState({
+      organ: "pancreas",
+      localText: collectText(normalizedOverrides, [
+        "pancreas_main",
+        "pancreas_echotexture"
+      ]),
+      globalText
+    }),
+    spleen: inferOrganState({
+      organ: "spleen",
+      localText: collectText(normalizedOverrides, [
+        "spleen_main",
+        "spleen_focal_lesion"
+      ]),
+      globalText
+    }),
+    kidneys: inferOrganState({
+      organ: "kidneys",
+      localText: collectText(normalizedOverrides, [
+        "kidneys_size",
+        "kidneys_main",
+        "kidneys_cmd",
+        "kidneys_cortical_scarring",
+        "kidneys_parenchyma",
+        "kidneys_calculus_hydronephrosis"
+      ]),
+      globalText
+    }),
+    bladder: inferOrganState({
+      organ: "bladder",
+      localText: collectText(normalizedOverrides, [
+        "bladder_main",
+        "bladder_mass_calculus"
+      ]),
+      globalText
+    }),
+    prostate: inferOrganState({
+      organ: "prostate",
+      localText: collectText(normalizedOverrides, [
+        "prostate_main",
+        "prostate_echotexture"
+      ]),
+      globalText
+    }),
+    uterus: inferOrganState({
+      organ: "uterus",
+      localText: collectText(normalizedOverrides, [
+        "uterus_main",
+        "uterus_myometrium",
+        "endometrium_measurement_mm"
+      ]),
+      globalText
+    }),
+    adnexa: inferOrganState({
+      organ: "adnexa",
+      localText: collectText(normalizedOverrides, [
+        "ovaries_main",
+        "adnexal_mass"
+      ]),
+      globalText
+    })
+  };
+
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.liver,
+    mainField: "liver_main",
+    detailFields: [
+      "liver_focal_lesion",
+      "liver_hepatic_veins",
+      "liver_ihbr",
+      "liver_portal_vein"
+    ]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.gallbladder,
+    mainField: "gallbladder_main",
+    detailFields: ["gallbladder_calculus_sludge"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.pancreas,
+    mainField: "pancreas_main",
+    detailFields: ["pancreas_echotexture"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.spleen,
+    mainField: "spleen_main",
+    detailFields: ["spleen_focal_lesion"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.kidneys,
+    mainField: "kidneys_main",
+    detailFields: [
+      "kidneys_size",
+      "kidneys_cmd",
+      "kidneys_cortical_scarring",
+      "kidneys_parenchyma",
+      "kidneys_calculus_hydronephrosis"
+    ]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.bladder,
+    mainField: "bladder_main",
+    detailFields: ["bladder_mass_calculus"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.prostate,
+    mainField: "prostate_main",
+    detailFields: ["prostate_echotexture"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.uterus,
+    mainField: "uterus_main",
+    detailFields: ["uterus_myometrium", "endometrium_measurement_mm"]
+  });
+  enforceOrganSuppression({
+    overrides: normalizedOverrides,
+    suppressed,
+    state: organStates.adnexa,
+    mainField: "ovaries_main",
+    detailFields: ["adnexal_mass"]
+  });
+
+  if (
+    !hasText(normalizedOverrides.uterus_main) &&
+    organStates.uterus === "surgically_absent"
+  ) {
+    normalizedOverrides.uterus_main =
+      "Uterus is not visualized, likely post-hysterectomy status.";
+    suppressed.delete("uterus_main");
+  }
+  if (
+    !hasText(normalizedOverrides.gallbladder_main) &&
+    organStates.gallbladder === "surgically_absent"
+  ) {
+    normalizedOverrides.gallbladder_main =
+      "is not visualized, likely post-cholecystectomy status.";
+    suppressed.delete("gallbladder_main");
+  }
+  if (
+    !hasText(normalizedOverrides.prostate_main) &&
+    organStates.prostate === "surgically_absent"
+  ) {
+    normalizedOverrides.prostate_main =
+      "Prostate is not visualized, likely post-prostatectomy status.";
+    suppressed.delete("prostate_main");
+  }
+  if (
+    !hasText(normalizedOverrides.ovaries_main) &&
+    organStates.adnexa === "surgically_absent"
+  ) {
+    normalizedOverrides.ovaries_main =
+      "Both ovaries are not visualized, likely post-oophorectomy status.";
+    suppressed.delete("ovaries_main");
+  }
+
+  if (gender === "male") {
+    normalizedOverrides.uterus_main = "";
+    normalizedOverrides.uterus_myometrium = "";
+    normalizedOverrides.endometrium_measurement_mm = "";
+    normalizedOverrides.ovaries_main = "";
+    normalizedOverrides.adnexal_mass = "";
+    suppressed.add("uterus_main");
+    suppressed.add("uterus_myometrium");
+    suppressed.add("endometrium_measurement_mm");
+    suppressed.add("ovaries_main");
+    suppressed.add("adnexal_mass");
+  } else {
+    normalizedOverrides.prostate_main = "";
+    normalizedOverrides.prostate_echotexture = "";
+    suppressed.add("prostate_main");
+    suppressed.add("prostate_echotexture");
+  }
+
+  const normalizedImpression = normalizeImpressionTerminology(
+    normalizedOverrides.impression || ""
+  );
+  const bladderText = collectText(normalizedOverrides, [
+    "bladder_main",
+    "bladder_mass_calculus"
+  ]);
+  const needsCystitisImpression =
+    hasBladderWallThickening(bladderText) && !/\bcystitis\b/i.test(normalizedImpression);
+  const impressionWithCystitis = needsCystitisImpression
+    ? normalizedImpression
+      ? `${normalizedImpression.replace(/[.;,\s]+$/g, "")}; features suggestive of cystitis`
+      : "Features suggestive of cystitis"
+    : normalizedImpression;
+  normalizedOverrides.impression = impressionWithCystitis;
+
+  return {
+    overrides: normalizedOverrides,
+    suppressedFields: Array.from(suppressed),
+    organStates
+  };
+}
+
 function resolveField(
   overrides: UsgFieldOverrides,
   defaults: Required<UsgFieldOverrides>,
-  key: keyof UsgFieldOverrides
+  key: keyof UsgFieldOverrides,
+  suppressedFields: Set<keyof UsgFieldOverrides>
 ) {
+  if (suppressedFields.has(key)) {
+    return "";
+  }
   const value = overrides[key];
   const trimmed = typeof value === "string" ? value.trim() : "";
   const fallback = defaults[key] as string;
@@ -169,9 +616,18 @@ export function buildUsgReport(params: {
   gender?: UsgGender;
   patient?: UsgPatientInfo;
   overrides?: UsgFieldOverrides;
+  suppressedFields?: (keyof UsgFieldOverrides)[];
 } = {}) {
   const gender = params.gender || "male";
-  const overrides = params.overrides || {};
+  const consistency = normalizeUsgOverridesForConsistency({
+    overrides: params.overrides || {},
+    gender
+  });
+  const overrides = consistency.overrides;
+  const suppressedFields = new Set([
+    ...consistency.suppressedFields,
+    ...(params.suppressedFields || [])
+  ]);
   const defaults =
     gender === "female" ? USG_DEFAULT_FIELDS_FEMALE : USG_DEFAULT_FIELDS_MALE;
   const patient = resolvePatientInfo(params.patient || {}, gender);
@@ -183,78 +639,130 @@ export function buildUsgReport(params: {
   lines.push("SONOGRAPHY WHOLE ABDOMEN");
 
   const liverLine = joinSentences([
-    resolveField(overrides, defaults, "liver_main"),
-    resolveField(overrides, defaults, "liver_focal_lesion"),
-    resolveField(overrides, defaults, "liver_hepatic_veins"),
-    resolveField(overrides, defaults, "liver_ihbr"),
-    resolveField(overrides, defaults, "liver_portal_vein")
+    resolveField(overrides, defaults, "liver_main", suppressedFields),
+    resolveField(overrides, defaults, "liver_focal_lesion", suppressedFields),
+    resolveField(overrides, defaults, "liver_hepatic_veins", suppressedFields),
+    resolveField(overrides, defaults, "liver_ihbr", suppressedFields),
+    resolveField(overrides, defaults, "liver_portal_vein", suppressedFields)
   ]);
-  lines.push(`Liver: ${liverLine}`);
+  if (liverLine) {
+    lines.push(`Liver: ${liverLine}`);
+  }
 
   const gallbladderLine = joinSentences([
-    resolveField(overrides, defaults, "gallbladder_main"),
-    resolveField(overrides, defaults, "gallbladder_calculus_sludge"),
-    resolveField(overrides, defaults, "cbd_main")
+    resolveField(overrides, defaults, "gallbladder_main", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "gallbladder_calculus_sludge",
+      suppressedFields
+    ),
+    resolveField(overrides, defaults, "cbd_main", suppressedFields)
   ]);
-  lines.push(`Gall bladder: ${gallbladderLine}`);
+  if (gallbladderLine) {
+    lines.push(`Gall bladder: ${gallbladderLine}`);
+  }
 
   const pancreasLine = joinSentences([
-    resolveField(overrides, defaults, "pancreas_main"),
-    resolveField(overrides, defaults, "pancreas_echotexture")
+    resolveField(overrides, defaults, "pancreas_main", suppressedFields),
+    resolveField(overrides, defaults, "pancreas_echotexture", suppressedFields)
   ]);
-  lines.push(`Pancreas: ${pancreasLine}`);
+  if (pancreasLine) {
+    lines.push(`Pancreas: ${pancreasLine}`);
+  }
 
   const spleenLine = joinSentences([
-    resolveField(overrides, defaults, "spleen_main"),
-    resolveField(overrides, defaults, "spleen_focal_lesion")
+    resolveField(overrides, defaults, "spleen_main", suppressedFields),
+    resolveField(overrides, defaults, "spleen_focal_lesion", suppressedFields)
   ]);
-  lines.push(`Spleen: ${spleenLine}`);
+  if (spleenLine) {
+    lines.push(`Spleen: ${spleenLine}`);
+  }
 
-  const kidneySize = resolveField(overrides, defaults, "kidneys_size");
+  const kidneySize = resolveField(
+    overrides,
+    defaults,
+    "kidneys_size",
+    suppressedFields
+  );
   if (kidneySize.trim()) {
     lines.push(`Kidneys: ${ensurePeriod(kidneySize)}`);
   }
 
   const kidneyDetails = joinSentences([
-    resolveField(overrides, defaults, "kidneys_main"),
-    resolveField(overrides, defaults, "kidneys_cmd"),
-    resolveField(overrides, defaults, "kidneys_cortical_scarring"),
-    resolveField(overrides, defaults, "kidneys_parenchyma"),
-    resolveField(overrides, defaults, "kidneys_calculus_hydronephrosis")
+    resolveField(overrides, defaults, "kidneys_main", suppressedFields),
+    resolveField(overrides, defaults, "kidneys_cmd", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "kidneys_cortical_scarring",
+      suppressedFields
+    ),
+    resolveField(overrides, defaults, "kidneys_parenchyma", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "kidneys_calculus_hydronephrosis",
+      suppressedFields
+    )
   ]);
   if (kidneyDetails) {
     lines.push(kidneySize.trim() ? kidneyDetails : `Kidneys: ${kidneyDetails}`);
   }
 
   const bladderLine = joinSentences([
-    resolveField(overrides, defaults, "bladder_main"),
-    resolveField(overrides, defaults, "bladder_mass_calculus")
+    resolveField(overrides, defaults, "bladder_main", suppressedFields),
+    resolveField(overrides, defaults, "bladder_mass_calculus", suppressedFields)
   ]);
-  lines.push(`Urinary Bladder: ${bladderLine}`);
+  if (bladderLine) {
+    lines.push(`Urinary Bladder: ${bladderLine}`);
+  }
 
   if (gender === "male") {
-    const prostateMain = resolveField(overrides, defaults, "prostate_main");
+    const prostateMain = resolveField(
+      overrides,
+      defaults,
+      "prostate_main",
+      suppressedFields
+    );
     if (prostateMain.trim()) {
       lines.push(`Prostate: ${ensurePeriod(prostateMain)}`);
     }
-    const prostateEcho = resolveField(overrides, defaults, "prostate_echotexture");
+    const prostateEcho = resolveField(
+      overrides,
+      defaults,
+      "prostate_echotexture",
+      suppressedFields
+    );
     if (prostateEcho.trim()) {
       lines.push(ensurePeriod(prostateEcho));
     }
   } else {
-    const uterusMain = resolveField(overrides, defaults, "uterus_main");
+    const uterusMain = resolveField(
+      overrides,
+      defaults,
+      "uterus_main",
+      suppressedFields
+    );
     const uterusMyometrium = resolveField(
       overrides,
       defaults,
-      "uterus_myometrium"
+      "uterus_myometrium",
+      suppressedFields
     );
     const endometrium = resolveField(
       overrides,
       defaults,
+      "endometrium_measurement_mm",
+      suppressedFields
+    );
+    const endometriumIsSuppressed = suppressedFields.has(
       "endometrium_measurement_mm"
     );
     const endometriumLine = endometrium.trim()
       ? `Endometrial echoes are central (${endometrium} mm).`
+      : endometriumIsSuppressed
+      ? ""
       : "Endometrial echoes are central.";
     const uterusLine = joinFragments([
       ensurePeriod(uterusMain),
@@ -266,27 +774,37 @@ export function buildUsgReport(params: {
     }
 
     const adnexaLine = joinSentences([
-      resolveField(overrides, defaults, "adnexal_mass"),
-      resolveField(overrides, defaults, "ovaries_main")
+      resolveField(overrides, defaults, "adnexal_mass", suppressedFields),
+      resolveField(overrides, defaults, "ovaries_main", suppressedFields)
     ]);
     if (adnexaLine) {
       lines.push(`Adenexa: ${adnexaLine}`);
     }
   }
 
-  const peritoneal = resolveField(overrides, defaults, "peritoneal_fluid");
+  const peritoneal = resolveField(
+    overrides,
+    defaults,
+    "peritoneal_fluid",
+    suppressedFields
+  );
   if (peritoneal.trim()) {
     lines.push(ensurePeriod(peritoneal));
   }
 
-  const lymphNodes = resolveField(overrides, defaults, "lymph_nodes");
+  const lymphNodes = resolveField(
+    overrides,
+    defaults,
+    "lymph_nodes",
+    suppressedFields
+  );
   if (lymphNodes.trim()) {
     lines.push(ensurePeriod(lymphNodes));
   }
 
   lines.push(
     buildConclusionLine(
-      resolveField(overrides, defaults, "impression"),
+      resolveField(overrides, defaults, "impression", suppressedFields),
       gender,
       defaults
     )
@@ -295,7 +813,8 @@ export function buildUsgReport(params: {
   const correlation = resolveField(
     overrides,
     defaults,
-    "correlate_clinically"
+    "correlate_clinically",
+    suppressedFields
   );
   if (correlation.trim()) {
     lines.push(ensurePeriod(correlation));

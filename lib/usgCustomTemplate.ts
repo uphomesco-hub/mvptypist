@@ -1,7 +1,9 @@
 import {
   buildUsgReport,
+  isHighRiskUsgOrganState,
   type UsgFieldOverrides,
   type UsgGender,
+  type UsgOrganStateMap,
   type UsgPatientInfo
 } from "@/lib/usgTemplate";
 
@@ -50,7 +52,29 @@ export type CustomRenderResult = {
   sectionsDetected: number;
   sectionsReplaced: number;
   usedFallbackDetection: boolean;
+  forcedCanonicalFallback?: boolean;
+  fallbackReason?: string;
 };
+
+const GENDER_INAPPLICABLE_SECTIONS: Record<UsgGender, CustomTemplateSectionKey[]> = {
+  male: ["UTERUS", "ADNEXA"],
+  female: ["PROSTATE"]
+};
+
+const ORGAN_SECTION_MAP: Array<{
+  organ: keyof UsgOrganStateMap;
+  section: CustomTemplateSectionKey;
+}> = [
+  { organ: "liver", section: "LIVER" },
+  { organ: "gallbladder", section: "GALL_CBD" },
+  { organ: "pancreas", section: "PANCREAS" },
+  { organ: "spleen", section: "SPLEEN" },
+  { organ: "kidneys", section: "KIDNEYS" },
+  { organ: "bladder", section: "BLADDER" },
+  { organ: "prostate", section: "PROSTATE" },
+  { organ: "uterus", section: "UTERUS" },
+  { organ: "adnexa", section: "ADNEXA" }
+];
 
 const HEADER_LINE_SKIP_PATTERN =
   /^(name|patient\s*name|patient|gender|sex|age|id|mrn|uhid|accession|date|exam\s*date|clinical\s*history|history)\b/i;
@@ -282,6 +306,27 @@ export function hasSectionOverrides(
 ) {
   const fields = SECTION_DEPENDENCIES[section] || [];
   return fields.some((field) => isMeaningfulOverrideValue(overrides[field]));
+}
+
+function isSectionApplicableForGender(
+  section: CustomTemplateSectionKey,
+  gender: UsgGender
+) {
+  return !GENDER_INAPPLICABLE_SECTIONS[gender].includes(section);
+}
+
+function isSectionDrivenByHighRiskOrganState(
+  section: CustomTemplateSectionKey,
+  organStates?: UsgOrganStateMap
+) {
+  if (!organStates) return false;
+  for (const entry of ORGAN_SECTION_MAP) {
+    if (entry.section !== section) continue;
+    if (isHighRiskUsgOrganState(organStates[entry.organ])) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function appendSectionLine(store: Record<CustomTemplateSectionKey, string[]>, key: CustomTemplateSectionKey, line: string) {
@@ -660,13 +705,24 @@ export function renderCustomTemplateDeterministically(params: {
   overrides: UsgFieldOverrides;
   gender: UsgGender;
   patient: UsgPatientInfo;
+  suppressedFields?: (keyof UsgFieldOverrides)[];
+  organStates?: UsgOrganStateMap;
 }): CustomRenderResult {
-  const { templateText, mapping, overrides, gender, patient } = params;
+  const {
+    templateText,
+    mapping,
+    overrides,
+    gender,
+    patient,
+    suppressedFields = [],
+    organStates
+  } = params;
 
   const canonicalReport = buildUsgReport({
     gender,
     patient,
-    overrides
+    overrides,
+    suppressedFields
   });
 
   const canonicalSections = extractCanonicalSectionValues(canonicalReport, gender);
@@ -684,6 +740,25 @@ export function renderCustomTemplateDeterministically(params: {
     mapping,
     candidates
   );
+
+  const detectedSectionKeys = new Set(sections.map((section) => section.key));
+  if (organStates) {
+    for (const entry of ORGAN_SECTION_MAP) {
+      if (!isHighRiskUsgOrganState(organStates[entry.organ])) continue;
+      const canonicalText = canonicalSections[entry.section] || "";
+      if (!canonicalText.trim()) continue;
+      if (detectedSectionKeys.has(entry.section)) continue;
+      return {
+        text: canonicalReport,
+        sectionsDetected: sections.length,
+        sectionsReplaced: 0,
+        usedFallbackDetection,
+        forcedCanonicalFallback: true,
+        fallbackReason:
+          "Custom template fallback to canonical report due to unresolved organ-state section mapping."
+      };
+    }
+  }
 
   if (!sections.length) {
     return {
@@ -705,16 +780,31 @@ export function renderCustomTemplateDeterministically(params: {
 
     const replacementText = canonicalSections[section.key] || "";
     const hasOverrides = hasSectionOverrides(section.key, overrides);
+    const sectionApplicable = isSectionApplicableForGender(section.key, gender);
+    const highRiskStateSection = isSectionDrivenByHighRiskOrganState(
+      section.key,
+      organStates
+    );
+    const shouldForceClear =
+      !sectionApplicable ||
+      ((hasOverrides || highRiskStateSection) && !replacementText.trim());
+    const shouldReplace =
+      shouldForceClear ||
+      (hasOverrides && replacementText.trim().length > 0) ||
+      (highRiskStateSection && replacementText.trim().length > 0);
 
-    if (!hasOverrides || !replacementText.trim()) {
+    if (!shouldReplace) {
       continue;
     }
 
     const existingBodyLines = output.slice(start, end);
-    const replacementLines = applyExistingLineStyle(
-      existingBodyLines,
-      replacementText
-    );
+    const replacementLines = shouldForceClear
+      ? []
+      : applyExistingLineStyle(existingBodyLines, replacementText);
+
+    if (!shouldForceClear && !replacementLines.length) {
+      continue;
+    }
 
     output.splice(start, Math.max(0, end - start), ...replacementLines);
     sectionsReplaced += 1;

@@ -12,6 +12,7 @@ import {
 } from "firebase/auth";
 import {
   collection,
+  collectionGroup,
   doc,
   getDoc,
   increment,
@@ -30,7 +31,9 @@ import { exportDocx } from "@/lib/exportDocx";
 import { exportPdf } from "@/lib/exportPdf";
 import { getFirebaseClient, isFirebaseClientConfigured } from "@/lib/firebaseClient";
 import {
+  computeObservationEditStats,
   deriveDashboardStats,
+  extractObservationCoreText,
   fileNameSafe,
   labelForStatus,
   modalityForTemplateId,
@@ -78,6 +81,10 @@ const API_ENDPOINT = API_BASE_URL
 const TEMPLATE_PROFILE_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/template-profile`
   : "/api/template-profile";
+const ISSUE_SUMMARY_ENDPOINT = API_BASE_URL
+  ? `${API_BASE_URL.replace(/\/$/, "")}/api/admin-issue-summary`
+  : "/api/admin-issue-summary";
+const ADMIN_EMAIL = "yashovrat56@gmail.com";
 const REPORT_HEADINGS = [
   "Liver:",
   "Gall bladder:",
@@ -540,6 +547,36 @@ type SavedCustomTemplate = {
   updatedAtMs: number;
 };
 
+type AdminIssue = {
+  issueId: string;
+  reportId: string;
+  ownerUid: string;
+  ownerEmail: string;
+  patientName: string;
+  templateTitle: string;
+  status: ReportStatus;
+  updatedAtMs: number;
+  aiText: string;
+  finalText: string;
+  changeCount: number;
+};
+
+type IssueSummaryPayload = {
+  summary: string;
+  key_changes: string[];
+  likely_model_gaps: string[];
+  quality_score: number;
+  source: "ai" | "fallback";
+};
+
+function ownerUidFromDocPath(path: string) {
+  const parts = String(path || "").split("/");
+  if (parts.length >= 4 && parts[0] === "users" && parts[2] === "reports") {
+    return parts[1];
+  }
+  return "";
+}
+
 function randomAccessionId() {
   return `ACC-${Math.floor(10000 + Math.random() * 90000)}-${Math.random()
     .toString(36)
@@ -599,7 +636,9 @@ export default function Home() {
   const [disclaimer, setDisclaimer] = useState("");
   const [rawJson, setRawJson] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [activeView, setActiveView] = useState<"dashboard" | "recording" | "report">("dashboard");
+  const [activeView, setActiveView] = useState<
+    "dashboard" | "recording" | "report" | "admin"
+  >("dashboard");
   const [customTemplateText, setCustomTemplateText] = useState("");
   const [customTemplateGender, setCustomTemplateGender] = useState<UsgGender>("male");
   const [customTemplateMapping, setCustomTemplateMapping] = useState<CustomTemplateMapping>({});
@@ -638,6 +677,13 @@ export default function Home() {
     useState(false);
   const [activeCustomTemplateId, setActiveCustomTemplateId] = useState("");
   const [customTemplateLabel, setCustomTemplateLabel] = useState("");
+  const [adminIssues, setAdminIssues] = useState<AdminIssue[]>([]);
+  const [isAdminIssuesLoading, setIsAdminIssuesLoading] = useState(false);
+  const [selectedAdminIssueId, setSelectedAdminIssueId] = useState("");
+  const [isIssueSummaryLoading, setIsIssueSummaryLoading] = useState(false);
+  const [issueSummaries, setIssueSummaries] = useState<
+    Record<string, IssueSummaryPayload>
+  >({});
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -763,6 +809,14 @@ export default function Home() {
     currentUser?.displayName ||
     (currentUser?.email ? currentUser.email.split("@")[0] : "Doctor");
   const isSearchMode = Boolean(searchQuery.trim());
+  const isAdmin =
+    String(currentUser?.email || "").trim().toLowerCase() === ADMIN_EMAIL;
+  const selectedAdminIssue =
+    adminIssues.find((item) => item.issueId === selectedAdminIssueId) || null;
+  const selectedAdminIssueSummary = selectedAdminIssue
+    ? issueSummaries[selectedAdminIssue.issueId] || null
+    : null;
+  const adminIssueCount = adminIssues.length;
   const visibleQuickTemplates = isQuickTemplatesExpanded
     ? quickTemplates
     : quickTemplates.slice(0, 4);
@@ -836,6 +890,12 @@ export default function Home() {
     }, 10000);
     return () => window.clearTimeout(timer);
   }, [error]);
+
+  useEffect(() => {
+    if (activeView === "admin" && !isAdmin) {
+      setActiveView("dashboard");
+    }
+  }, [activeView, isAdmin]);
 
   useEffect(() => {
     if (!firebaseClient) {
@@ -924,6 +984,11 @@ export default function Home() {
             status,
             observationsHtml: String(data.observationsHtml || ""),
             observationsText: String(data.observationsText || ""),
+            aiGeneratedObservationsText: String(data.aiGeneratedObservationsText || ""),
+            hasObservationEdits: Boolean(data.hasObservationEdits),
+            observationEditCount: Number(data.observationEditCount || 0),
+            ownerUid: String(data.ownerUid || currentUser.uid),
+            ownerEmail: String(data.ownerEmail || currentUser.email || ""),
             rawJson: String(data.rawJson || ""),
             flags: Array.isArray(data.flags)
               ? data.flags.map((item) => String(item || ""))
@@ -960,6 +1025,74 @@ export default function Home() {
     );
     return () => unsubscribe();
   }, [firebaseClient, currentUser]);
+
+  useEffect(() => {
+    if (!firebaseClient || !currentUser || !isAdmin) {
+      setAdminIssues([]);
+      setIsAdminIssuesLoading(false);
+      return;
+    }
+    setIsAdminIssuesLoading(true);
+    const issuesQuery = query(
+      collectionGroup(firebaseClient.db, "reports"),
+      orderBy("updatedAt", "desc"),
+      limit(300)
+    );
+    const unsubscribe = onSnapshot(
+      issuesQuery,
+      (snapshot) => {
+        const next: AdminIssue[] = [];
+        for (const docSnap of snapshot.docs) {
+          const data = docSnap.data() as Record<string, unknown>;
+          const reportId = docSnap.id;
+          const ownerUid = String(data.ownerUid || ownerUidFromDocPath(docSnap.ref.path));
+          const ownerEmail = String(data.ownerEmail || "");
+          const statusRaw = String(data.status || "draft");
+          const status: ReportStatus =
+            statusRaw === "completed" ||
+            statusRaw === "pending_review" ||
+            statusRaw === "discarded"
+              ? statusRaw
+              : "draft";
+          const aiText = String(data.aiGeneratedObservationsText || "");
+          const finalText = String(data.observationsText || "");
+          const stats = computeObservationEditStats(aiText, finalText);
+          const hasObservationEdits = Boolean(data.hasObservationEdits) || stats.hasEdits;
+          if (!hasObservationEdits) continue;
+          next.push({
+            issueId: `${ownerUid}:${reportId}`,
+            reportId,
+            ownerUid,
+            ownerEmail,
+            patientName: String(data.patientName || "Unknown Patient"),
+            templateTitle: String(data.templateTitle || data.templateId || "Unknown Template"),
+            status,
+            updatedAtMs: parseTimestampToMillis(data.updatedAt),
+            aiText: aiText || finalText,
+            finalText,
+            changeCount: Number(data.observationEditCount || stats.changeCount || 1)
+          });
+        }
+        setAdminIssues(next);
+        setIsAdminIssuesLoading(false);
+      },
+      (snapshotError) => {
+        setError(firebaseErrorMessage(snapshotError));
+        setIsAdminIssuesLoading(false);
+      }
+    );
+    return () => unsubscribe();
+  }, [firebaseClient, currentUser, isAdmin]);
+
+  useEffect(() => {
+    if (!adminIssues.length) {
+      setSelectedAdminIssueId("");
+      return;
+    }
+    if (!adminIssues.some((item) => item.issueId === selectedAdminIssueId)) {
+      setSelectedAdminIssueId(adminIssues[0].issueId);
+    }
+  }, [adminIssues, selectedAdminIssueId]);
 
   useEffect(() => {
     if (!firebaseClient || !currentUser) {
@@ -1019,12 +1152,22 @@ export default function Home() {
       return;
     }
     const timer = window.setTimeout(async () => {
+      const aiGeneratedObservationsText =
+        activeReport?.aiGeneratedObservationsText ||
+        extractObservationCoreText(observationsPlain);
+      const editStats = computeObservationEditStats(
+        aiGeneratedObservationsText,
+        observationsPlain
+      );
       try {
         await setDoc(
           doc(firebaseClient.db, `users/${currentUser.uid}/reports/${activeReportId}`),
           {
             observationsHtml: observations,
             observationsText: observationsPlain,
+            aiGeneratedObservationsText,
+            hasObservationEdits: editStats.hasEdits,
+            observationEditCount: editStats.changeCount,
             rawJson,
             flags,
             disclaimer,
@@ -1045,6 +1188,7 @@ export default function Home() {
     activeReportId,
     observations,
     observationsPlain,
+    activeReport?.aiGeneratedObservationsText,
     rawJson,
     flags,
     disclaimer
@@ -1611,6 +1755,9 @@ export default function Home() {
       setSavedCustomTemplates([]);
       setCustomTemplateLabel("");
       setActiveCustomTemplateId("");
+      setAdminIssues([]);
+      setSelectedAdminIssueId("");
+      setIssueSummaries({});
       reportAudioCacheRef.current = {};
       setWorklistStatusFilter("all");
       setSearchQuery("");
@@ -1746,9 +1893,25 @@ export default function Home() {
       const existingGeneratedAtMs = parseTimestampToMillis(existingData?.generatedAt);
       const resolvedGeneratedAtMs =
         activeReport?.generatedAtMs || existingGeneratedAtMs || Date.now();
+      const existingAiGeneratedObservationsText = String(
+        activeReport?.aiGeneratedObservationsText ||
+          existingData?.aiGeneratedObservationsText ||
+          ""
+      ).trim();
+      const aiGeneratedObservationsText =
+        params.status === "pending_review"
+          ? extractObservationCoreText(params.observationsText)
+          : existingAiGeneratedObservationsText ||
+            extractObservationCoreText(params.observationsText);
+      const editStats = computeObservationEditStats(
+        aiGeneratedObservationsText,
+        params.observationsText
+      );
       await setDoc(
         reportRef,
         {
+          ownerUid: currentUser.uid,
+          ownerEmail: currentUser.email || "",
           templateId,
           templateTitle: selectedTemplate?.title || templateId,
           patientName: patientMeta.patientName,
@@ -1759,6 +1922,9 @@ export default function Home() {
           status: params.status,
           observationsHtml: params.observationsHtml,
           observationsText: params.observationsText,
+          aiGeneratedObservationsText,
+          hasObservationEdits: editStats.hasEdits,
+          observationEditCount: editStats.changeCount,
           rawJson: params.rawPayloadJson,
           flags: params.flagList,
           disclaimer: params.disclaimerText,
@@ -2203,6 +2369,51 @@ export default function Home() {
     }
   };
 
+  const handleAnalyzeIssue = async (issue: AdminIssue, forceRefresh = false) => {
+    setSelectedAdminIssueId(issue.issueId);
+    if (!forceRefresh && issueSummaries[issue.issueId]) {
+      return;
+    }
+    setIsIssueSummaryLoading(true);
+    try {
+      const response = await fetch(ISSUE_SUMMARY_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ai_text: issue.aiText,
+          final_text: issue.finalText
+        })
+      });
+      const payload = (await response.json()) as Record<string, unknown>;
+      if (!response.ok) {
+        throw new Error(String(payload.error || "Issue analysis failed."));
+      }
+      const summary: IssueSummaryPayload = {
+        summary: String(payload.summary || "No summary available."),
+        key_changes: Array.isArray(payload.key_changes)
+          ? payload.key_changes.map((item) => String(item || "")).filter(Boolean)
+          : [],
+        likely_model_gaps: Array.isArray(payload.likely_model_gaps)
+          ? payload.likely_model_gaps
+              .map((item) => String(item || ""))
+              .filter(Boolean)
+          : [],
+        quality_score: Number.isFinite(Number(payload.quality_score))
+          ? Number(payload.quality_score)
+          : 80,
+        source: String(payload.source || "fallback") === "ai" ? "ai" : "fallback"
+      };
+      setIssueSummaries((current) => ({
+        ...current,
+        [issue.issueId]: summary
+      }));
+    } catch (analysisError) {
+      setError((analysisError as Error).message);
+    } finally {
+      setIsIssueSummaryLoading(false);
+    }
+  };
+
   const toggleAbnormalFormatting = () => {
     const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
     if (!activeEditor) return;
@@ -2408,6 +2619,16 @@ export default function Home() {
               <span className="material-icons-round">edit_note</span>
               {!isSidebarCollapsed && "Report Editor"}
             </button>
+            {isAdmin && (
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => setActiveView("admin")}
+              >
+                <span className="material-icons-round">bug_report</span>
+                {!isSidebarCollapsed &&
+                  `Admin Issues${adminIssueCount ? ` (${adminIssueCount})` : ""}`}
+              </button>
+            )}
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
             <div className="flex items-center gap-3 p-2">
@@ -2448,7 +2669,25 @@ export default function Home() {
                 onChange={(event) => setSearchQuery(event.target.value)}
               />
             </div>
+            {isAdmin && (
+              <button
+                className="ml-3 inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-[11px] font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 md:hidden"
+                onClick={() => setActiveView("admin")}
+              >
+                <span className="material-icons-round text-sm">bug_report</span>
+                {adminIssueCount}
+              </button>
+            )}
             <div className="ml-4 hidden items-center gap-6 md:flex">
+              {isAdmin && (
+                <button
+                  className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={() => setActiveView("admin")}
+                >
+                  <span className="material-icons-round text-sm">bug_report</span>
+                  Issues {adminIssueCount}
+                </button>
+              )}
               <div className="flex items-center gap-2 rounded-full border border-green-100 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-600 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400">
                 <span className="material-icons-round text-sm">mic</span>
                 AI Voice Ready
@@ -3101,6 +3340,309 @@ export default function Home() {
     );
   }
 
+  if (activeView === "admin" && isAdmin) {
+    return (
+      <div className="flex h-screen overflow-hidden bg-background-light dark:bg-background-dark font-display text-slate-900 dark:text-slate-100">
+        <aside
+          className={`hidden ${sidebarWidthClass} flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
+        >
+          <div className="flex items-center justify-between p-4">
+            <div className="flex items-center gap-2 text-primary">
+              <span className="material-icons-round text-3xl">analytics</span>
+              {!isSidebarCollapsed && (
+                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+              )}
+            </div>
+            <button
+              type="button"
+              className="rounded-md p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={() => setIsSidebarCollapsed((current) => !current)}
+              title={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            >
+              <span className="material-icons-round text-base">
+                {isSidebarCollapsed ? "chevron_right" : "chevron_left"}
+              </span>
+            </button>
+          </div>
+          <nav className="flex-1 space-y-1 px-3">
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => setActiveView("dashboard")}
+            >
+              <span className="material-icons-round">dashboard</span>
+              {!isSidebarCollapsed && "Dashboard"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => canStartNewFromDashboard && startNewReportSession()}
+              disabled={!canStartNewFromDashboard}
+            >
+              <span className="material-icons-round">mic</span>
+              {!isSidebarCollapsed && "Recording"}
+            </button>
+            <button
+              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+              disabled={!canResumeReportFromDashboard}
+            >
+              <span className="material-icons-round">edit_note</span>
+              {!isSidebarCollapsed && "Report Editor"}
+            </button>
+            <button className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-left font-medium text-primary">
+              <span className="material-icons-round">bug_report</span>
+              {!isSidebarCollapsed && `Admin Issues (${adminIssueCount})`}
+            </button>
+          </nav>
+          <div className="border-t border-slate-200 p-4 dark:border-slate-800">
+            <div className="flex items-center gap-3 p-2">
+              <img
+                className="h-10 w-10 rounded-full object-cover shadow-sm"
+                alt="Radiologist"
+                src="https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg"
+              />
+              {!isSidebarCollapsed && (
+                <div className="overflow-hidden">
+                  <p className="truncate text-sm font-semibold">{doctorName}</p>
+                  <p className="truncate text-xs text-slate-500">
+                    {doctorProfile?.role || "Radiologist"}
+                  </p>
+                </div>
+              )}
+            </div>
+            {!isSidebarCollapsed && currentUser && (
+              <button
+                className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </button>
+            )}
+          </div>
+        </aside>
+
+        <main className={`${sidebarOffsetClass} flex min-h-0 flex-1 flex-col overflow-hidden`}>
+          <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200 bg-white/90 px-4 backdrop-blur dark:border-slate-800 dark:bg-slate-900/90 md:px-6">
+            <div className="flex items-center gap-3">
+              <button
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
+                onClick={() => setActiveView("dashboard")}
+              >
+                Dashboard
+              </button>
+              <div>
+                <h1 className="text-base font-bold text-slate-900 dark:text-white md:text-lg">
+                  Admin Issue Dashboard
+                </h1>
+                <p className="text-[11px] text-slate-500 md:text-xs">
+                  {adminIssueCount} edited reports where doctors changed AI observations.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold uppercase text-primary">
+                Admin
+              </span>
+              <button
+                className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 md:hidden"
+                onClick={handleSignOut}
+              >
+                Sign Out
+              </button>
+            </div>
+          </header>
+
+          <div className="custom-scrollbar flex-1 overflow-y-auto p-3 md:p-6">
+            <div className="mx-auto grid w-full max-w-7xl gap-4 xl:grid-cols-[320px,1fr]">
+              <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+                  <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    Edited Reports
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Select a case to compare AI output vs final report.
+                  </p>
+                </div>
+                <div className="custom-scrollbar max-h-[70vh] overflow-y-auto p-2">
+                  {isAdminIssuesLoading && (
+                    <div className="rounded-lg px-3 py-4 text-sm text-slate-500">
+                      Loading issues...
+                    </div>
+                  )}
+                  {!isAdminIssuesLoading && adminIssues.length === 0 && (
+                    <div className="rounded-lg px-3 py-4 text-sm text-slate-500">
+                      No edited reports detected yet.
+                    </div>
+                  )}
+                  {adminIssues.map((issue) => {
+                    const isActive = issue.issueId === selectedAdminIssueId;
+                    return (
+                      <button
+                        key={issue.issueId}
+                        className={`mb-2 w-full rounded-lg border px-3 py-3 text-left transition-colors ${
+                          isActive
+                            ? "border-primary/40 bg-primary/10"
+                            : "border-slate-200 bg-white hover:bg-slate-50 dark:border-slate-800 dark:bg-slate-900 dark:hover:bg-slate-800"
+                        }`}
+                        onClick={() => setSelectedAdminIssueId(issue.issueId)}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <p className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
+                            {issue.patientName}
+                          </p>
+                          <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                            {issue.changeCount}
+                          </span>
+                        </div>
+                        <p className="mt-1 truncate text-xs text-slate-500">
+                          {issue.templateTitle}
+                        </p>
+                        <p className="mt-1 truncate text-[11px] text-slate-400">
+                          {issue.ownerEmail || issue.ownerUid || "Unknown owner"}
+                        </p>
+                        <div className="mt-2 flex items-center justify-between text-[11px]">
+                          <span
+                            className={`inline-flex items-center rounded-full px-2 py-0.5 font-semibold uppercase ${statusBadgeClasses(
+                              issue.status
+                            )}`}
+                          >
+                            {labelForStatus(issue.status)}
+                          </span>
+                          <span className="text-slate-400">
+                            {formatGeneratedTime(issue.updatedAtMs)}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+                {!selectedAdminIssue ? (
+                  <div className="flex min-h-[320px] items-center justify-center px-4 text-sm text-slate-500">
+                    Select an issue from the left panel.
+                  </div>
+                ) : (
+                  <div className="p-4 md:p-5">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h2 className="text-lg font-bold text-slate-900 dark:text-slate-100">
+                          {selectedAdminIssue.patientName}
+                        </h2>
+                        <p className="text-sm text-slate-500">
+                          {selectedAdminIssue.templateTitle}
+                        </p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Owner:{" "}
+                          {selectedAdminIssue.ownerEmail ||
+                            selectedAdminIssue.ownerUid ||
+                            "Unknown"}
+                          {" • "}
+                          Updated: {formatGeneratedTime(selectedAdminIssue.updatedAtMs)}
+                          {" • "}
+                          {selectedAdminIssue.changeCount} observation edits
+                        </p>
+                      </div>
+                      <button
+                        className="rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white shadow-md shadow-primary/20 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
+                        onClick={() => void handleAnalyzeIssue(selectedAdminIssue, true)}
+                        disabled={isIssueSummaryLoading}
+                      >
+                        {isIssueSummaryLoading ? "Analyzing..." : "Analyze with AI"}
+                      </button>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 2xl:grid-cols-2">
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          AI Generated Report
+                        </p>
+                        <textarea
+                          readOnly
+                          value={selectedAdminIssue.aiText}
+                          className="custom-scrollbar h-64 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[40vh]"
+                        />
+                      </div>
+                      <div>
+                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                          Final Edited Report
+                        </p>
+                        <textarea
+                          readOnly
+                          value={selectedAdminIssue.finalText}
+                          className="custom-scrollbar h-64 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[40vh]"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="mt-4 rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-700 dark:bg-slate-800/50">
+                      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                        <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                          AI Change Summary
+                        </h3>
+                        {selectedAdminIssueSummary && (
+                          <span className="rounded-full bg-primary/10 px-2 py-1 text-[10px] font-bold uppercase text-primary">
+                            {selectedAdminIssueSummary.source === "ai"
+                              ? "Gemini"
+                              : "Fallback"}{" "}
+                            • Score {selectedAdminIssueSummary.quality_score}
+                          </span>
+                        )}
+                      </div>
+                      {!selectedAdminIssueSummary && !isIssueSummaryLoading && (
+                        <p className="text-sm text-slate-500">
+                          Click &quot;Analyze with AI&quot; to generate a concise issue summary.
+                        </p>
+                      )}
+                      {isIssueSummaryLoading && (
+                        <p className="text-sm text-slate-500">
+                          Running comparison...
+                        </p>
+                      )}
+                      {selectedAdminIssueSummary && (
+                        <div className="space-y-3">
+                          <p className="text-sm text-slate-700 dark:text-slate-200">
+                            {selectedAdminIssueSummary.summary}
+                          </p>
+                          {selectedAdminIssueSummary.key_changes.length > 0 && (
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Key Changes
+                              </p>
+                              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-200">
+                                {selectedAdminIssueSummary.key_changes.map((item, index) => (
+                                  <li key={`change-${index}`}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {selectedAdminIssueSummary.likely_model_gaps.length > 0 && (
+                            <div>
+                              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Likely Model Gaps
+                              </p>
+                              <ul className="mt-1 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-200">
+                                {selectedAdminIssueSummary.likely_model_gaps.map((item, index) => (
+                                  <li key={`gap-${index}`}>{item}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </section>
+            </div>
+          </div>
+        </main>
+
+        {errorToast}
+      </div>
+    );
+  }
+
   if (activeView === "recording") {
     return (
       <div className="flex h-screen flex-col overflow-hidden bg-background-light text-slate-800 dark:bg-background-dark dark:text-slate-200">
@@ -3180,6 +3722,17 @@ export default function Home() {
                 <span className="material-icons-round">edit_note</span>
                 {!isSidebarCollapsed && "Report Editor"}
               </button>
+              {isAdmin && (
+                <button
+                  className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                  title="Admin Issues"
+                  onClick={() => setActiveView("admin")}
+                >
+                  <span className="material-icons-round">bug_report</span>
+                  {!isSidebarCollapsed &&
+                    `Admin Issues${adminIssueCount ? ` (${adminIssueCount})` : ""}`}
+                </button>
+              )}
             </nav>
             <div className="border-t border-slate-200 p-4 dark:border-slate-800">
               <div className="flex items-center gap-3 p-2">
@@ -3510,7 +4063,7 @@ export default function Home() {
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100">
+    <div className="flex h-[100dvh] min-h-screen flex-col overflow-hidden bg-background-light font-display text-slate-900 dark:bg-background-dark dark:text-slate-100 md:h-screen">
       <header className={`${sidebarOffsetClass} sticky top-0 z-50 flex h-16 items-center justify-between border-b border-slate-200 bg-white px-4 md:px-8 dark:border-slate-800 dark:bg-slate-900`}>
         <div className="flex items-center gap-6">
           <button
@@ -3556,7 +4109,9 @@ export default function Home() {
         </div>
       </header>
 
-      <main className={`${sidebarOffsetClass} flex min-h-0 flex-grow flex-col overflow-hidden md:flex-row`}>
+      <main
+        className={`${sidebarOffsetClass} flex min-h-0 flex-grow flex-col overflow-x-hidden overflow-y-auto pb-28 md:flex-row md:overflow-hidden md:pb-0`}
+      >
         <aside
           className={`hidden ${sidebarWidthClass} fixed inset-y-0 left-0 z-40 flex-col border-r border-slate-200 bg-white transition-all duration-200 dark:border-slate-800 dark:bg-slate-900 lg:flex`}
         >
@@ -3608,6 +4163,17 @@ export default function Home() {
               <span className="material-icons-round">edit_note</span>
               {!isSidebarCollapsed && "Report Editor"}
             </button>
+            {isAdmin && (
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
+                title="Admin Issues"
+                onClick={() => setActiveView("admin")}
+              >
+                <span className="material-icons-round">bug_report</span>
+                {!isSidebarCollapsed &&
+                  `Admin Issues${adminIssueCount ? ` (${adminIssueCount})` : ""}`}
+              </button>
+            )}
           </nav>
           <div className="border-t border-slate-200 p-4 dark:border-slate-800">
             <div className="flex items-center gap-3 p-2">
@@ -3634,8 +4200,8 @@ export default function Home() {
           </div>
         </aside>
 
-        <div className="flex min-h-0 flex-grow flex-col overflow-hidden p-4 md:p-6">
-          <div className="mx-auto flex min-h-0 w-full max-w-4xl flex-1 flex-col gap-4">
+        <div className="flex min-h-0 flex-grow flex-col overflow-visible p-3 md:overflow-hidden md:p-6">
+          <div className="mx-auto flex w-full max-w-4xl flex-col gap-3 md:min-h-0 md:flex-1 md:gap-4">
             <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex items-center gap-4">
                 <div>
@@ -3693,7 +4259,7 @@ export default function Home() {
               </div>
             )}
 
-            <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+            <div className="flex min-h-[56vh] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:min-h-0 md:flex-1 dark:border-slate-800 dark:bg-slate-900">
               <div className="flex flex-wrap items-center justify-between border-b border-slate-200 bg-slate-50/50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50">
                 <div className="flex items-center gap-1">
                   <button
@@ -3766,7 +4332,7 @@ export default function Home() {
               </div>
             </div>
 
-            <div className="flex flex-shrink-0 flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-3 dark:border-slate-800">
+            <div className="hidden flex-shrink-0 flex-wrap items-center justify-between gap-4 border-t border-slate-200 py-3 md:flex dark:border-slate-800">
               <div className="flex gap-2">
                 <button
                   className="flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold transition-all hover:bg-white dark:border-slate-700 dark:hover:bg-slate-800"
@@ -3817,7 +4383,7 @@ export default function Home() {
           </div>
         </div>
 
-        <aside className="custom-scrollbar w-full overflow-y-auto border-l border-slate-200 bg-white p-6 lg:w-80 dark:border-slate-800 dark:bg-slate-900">
+        <aside className="custom-scrollbar hidden w-full overflow-y-auto border-l border-slate-200 bg-white p-6 lg:block lg:w-80 dark:border-slate-800 dark:bg-slate-900">
           <div className="flex items-center justify-between">
             <h3 className="flex items-center gap-2 font-bold">
               <span className="material-icons-round text-primary">auto_awesome</span>
@@ -3895,7 +4461,54 @@ export default function Home() {
         </aside>
       </main>
 
-      <div className="fixed bottom-6 right-6 lg:hidden">
+      <div
+        className="fixed inset-x-3 z-50 md:hidden"
+        style={{ bottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
+        <div className="rounded-2xl border border-slate-200 bg-white/95 p-2 shadow-xl backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">
+          <div className="flex items-center gap-2 overflow-x-auto">
+            <button
+              className="min-w-[4.5rem] rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200"
+              onClick={() => exportPdf("radiology-report.pdf", observations)}
+              disabled={!hasObservations}
+            >
+              PDF
+            </button>
+            <button
+              className="min-w-[4.5rem] rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200"
+              onClick={() => exportDocx("radiology-report.docx", observations)}
+              disabled={!hasObservations}
+            >
+              DOCX
+            </button>
+            <button
+              className="min-w-[4.5rem] rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-bold text-amber-700 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+              onClick={handleMarkDraft}
+              disabled={!hasObservations || isSavingReport}
+            >
+              Draft
+            </button>
+            <button
+              className="min-w-[4.5rem] rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+              onClick={handleDiscardReport}
+              disabled={isSavingReport}
+            >
+              Discard
+            </button>
+            {!isCompletedReportView && (
+              <button
+                className="min-w-[5.5rem] rounded-lg bg-primary px-3 py-2 text-xs font-bold text-white"
+                onClick={handleFinalizeReport}
+                disabled={!hasObservations || isSavingReport}
+              >
+                Finalize
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div className="fixed bottom-24 right-4 z-40 lg:hidden">
         <button className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-white shadow-2xl">
           <span className="material-icons-round">auto_awesome</span>
         </button>
@@ -3915,14 +4528,16 @@ export default function Home() {
                 Exit
               </button>
             </div>
-            <Editor
-              value={observations}
-              onChange={setObservations}
-              placeholder="Generated report will appear here."
-              disabled={isGenerating}
-              ref={fullscreenEditorRef}
-              className="report-editor full"
-            />
+            <div className="custom-scrollbar min-h-0 flex-1 overflow-y-auto">
+              <Editor
+                value={observations}
+                onChange={setObservations}
+                placeholder="Generated report will appear here."
+                disabled={isGenerating}
+                ref={fullscreenEditorRef}
+                className="report-editor full mobile-full"
+              />
+            </div>
           </div>
         </div>
       )}

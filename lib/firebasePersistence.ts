@@ -14,6 +14,11 @@ export type ReportRecord = {
   status: ReportStatus;
   observationsHtml: string;
   observationsText: string;
+  aiGeneratedObservationsText: string;
+  hasObservationEdits: boolean;
+  observationEditCount: number;
+  ownerUid: string;
+  ownerEmail: string;
   rawJson: string;
   flags: string[];
   disclaimer: string;
@@ -32,6 +37,84 @@ export type ReportRecord = {
   createdAtMs: number;
   updatedAtMs: number;
 };
+
+export type ObservationEditStats = {
+  hasEdits: boolean;
+  changeCount: number;
+  aiCoreText: string;
+  finalCoreText: string;
+};
+
+const OBSERVATION_IGNORED_LINE_PATTERNS = [
+  /^name\s*:/i,
+  /^gender\s*:/i,
+  /^date\s*:/i,
+  /^sonography\b/i,
+  /^-{5,}\s*end/i,
+  /sonography has its limitations/i,
+  /^non obstructing ureteric calculi/i,
+  /^draft only\./i
+];
+
+function normalizeObservationLine(line: string) {
+  return line.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+export function extractObservationLines(text: string) {
+  return String(text || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter(
+      (line) =>
+        !OBSERVATION_IGNORED_LINE_PATTERNS.some((pattern) =>
+          pattern.test(line)
+        )
+    );
+}
+
+export function extractObservationCoreText(text: string) {
+  return extractObservationLines(text).join("\n");
+}
+
+export function computeObservationEditStats(
+  aiText: string,
+  finalText: string
+): ObservationEditStats {
+  const aiLines = extractObservationLines(aiText);
+  const finalLines = extractObservationLines(finalText);
+  const aiNormalized = aiLines.map(normalizeObservationLine);
+  const finalNormalized = finalLines.map(normalizeObservationLine);
+  const hasEdits = aiNormalized.join("\n") !== finalNormalized.join("\n");
+
+  const aiCounts = new Map<string, number>();
+  const finalCounts = new Map<string, number>();
+  for (const line of aiNormalized) {
+    aiCounts.set(line, (aiCounts.get(line) || 0) + 1);
+  }
+  for (const line of finalNormalized) {
+    finalCounts.set(line, (finalCounts.get(line) || 0) + 1);
+  }
+
+  let changeCount = 0;
+  const allLines = new Set<string>([
+    ...Array.from(aiCounts.keys()),
+    ...Array.from(finalCounts.keys())
+  ]);
+  for (const line of allLines) {
+    changeCount += Math.abs((aiCounts.get(line) || 0) - (finalCounts.get(line) || 0));
+  }
+  if (hasEdits && changeCount === 0) {
+    changeCount = 1;
+  }
+
+  return {
+    hasEdits,
+    changeCount,
+    aiCoreText: aiLines.join("\n"),
+    finalCoreText: finalLines.join("\n")
+  };
+}
 
 export type DashboardStats = {
   completedToday: number;
