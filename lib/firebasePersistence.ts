@@ -54,6 +54,8 @@ const OBSERVATION_IGNORED_LINE_PATTERNS = [
   /^lab\s*no\b/i,
   /^age\s*\/?\s*sex\b/i,
   /^referred\s+by\b/i,
+  /^\+[-+]+\+$/,
+  /^\|.*\|$/,
   /^usg\s*kub\b/i,
   /^sonography\b/i,
   /^-{5,}\s*end/i,
@@ -165,12 +167,15 @@ export function parsePatientFromReport(text: string) {
 
   const nameMatch =
     head.match(/name\s*:\s*([^|]+?)(?=\s{2,}gender\s*:|$|\|)/i) ||
+    head.match(/\|\s*name\s*\|\s*([^|]+?)\s*\|/i) ||
     head.match(/patient\s*name\s*[:,-]?\s*([a-z .'-]{2,60})/i);
   const genderMatch =
     head.match(/gender\s*:\s*([^|]+?)(?=\s{2,}date\s*:|$|\|)/i) ||
+    head.match(/\|\s*age\s*\/\s*sex\s*\|\s*[^|]*\b(male|female)\b[^|]*\|/i) ||
     head.match(/\b(male|female)\b/i);
   const dateMatch =
     head.match(/date\s*:\s*([^|]+)$/i) ||
+    head.match(/\|\s*date\s*\|\s*([^|]+?)\s*\|/i) ||
     head.match(/\b(\d{1,2}\s+[a-zA-Z]+\s+\d{4})\b/);
 
   const patientName = (nameMatch?.[1] || "").trim() || "Unknown Patient";

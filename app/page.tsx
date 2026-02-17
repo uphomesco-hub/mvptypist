@@ -110,6 +110,8 @@ const SKIP_LINE_PATTERNS = [
   /^lab\s*no\b/i,
   /^age\s*\/?\s*sex\b/i,
   /^referred\s+by\b/i,
+  /^\+[-+]+\+$/,
+  /^\|.*\|$/,
   /^-{6,}/,
   /^non obstructing/i
 ];

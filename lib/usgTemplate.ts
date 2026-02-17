@@ -4,6 +4,9 @@ export type UsgPatientInfo = {
   name?: string;
   gender?: string;
   date?: string;
+  age?: string;
+  labNo?: string;
+  referredBy?: string;
 };
 
 export type UsgFieldOverrides = {
@@ -602,6 +605,54 @@ function joinFragments(parts: string[]) {
   return parts.map((part) => part.trim()).filter(Boolean).join(" ");
 }
 
+function padTableCell(text: string, minWidth: number) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length >= minWidth) return normalized;
+  return `${normalized}${" ".repeat(minWidth - normalized.length)}`;
+}
+
+function buildUsgKubHeaderTable(params: {
+  labNo: string;
+  date: string;
+  name: string;
+  ageSex: string;
+  referredBy: string;
+}) {
+  const labelWidth = Math.max("REFERRED BY".length, "AGE / SEX".length, 8);
+  const leftValueWidth = Math.max(
+    params.labNo.length,
+    params.name.length,
+    params.referredBy.length,
+    20
+  );
+  const rightValueWidth = Math.max(params.date.length, params.ageSex.length, 16);
+
+  const border =
+    `+${"-".repeat(labelWidth + 2)}` +
+    `+${"-".repeat(leftValueWidth + 2)}` +
+    `+${"-".repeat(labelWidth + 2)}` +
+    `+${"-".repeat(rightValueWidth + 2)}+`;
+
+  const row = (label1: string, value1: string, label2: string, value2: string) =>
+    `| ${padTableCell(label1, labelWidth)} | ${padTableCell(
+      value1,
+      leftValueWidth
+    )} | ${padTableCell(label2, labelWidth)} | ${padTableCell(
+      value2,
+      rightValueWidth
+    )} |`;
+
+  return [
+    border,
+    row("LAB NO.", params.labNo, "DATE", params.date),
+    border,
+    row("NAME", params.name, "AGE / SEX", params.ageSex),
+    border,
+    row("REFERRED BY", params.referredBy, "", ""),
+    border
+  ];
+}
+
 function resolvePatientInfo(patient: UsgPatientInfo, gender: UsgGender) {
   const name = patient.name?.trim() || "________________";
   const genderLabel =
@@ -868,14 +919,24 @@ export function buildUsgKubReport(params: {
       ? USG_KUB_DEFAULT_FIELDS_FEMALE
       : USG_KUB_DEFAULT_FIELDS_MALE;
   const patient = resolvePatientInfo(params.patient || {}, gender);
+  const labNo = params.patient?.labNo?.trim() || "____________________";
+  const age = params.patient?.age?.trim() || "________";
+  const referredBy =
+    params.patient?.referredBy?.trim() || USG_KUB_REFERRED_BY_DEFAULT;
+  const ageSex = `${age} / ${patient.gender}`;
 
   const lines: string[] = [];
   lines.push(USG_KUB_DEPARTMENT_LINE);
   lines.push("");
-  lines.push(`LAB NO. ____________________    DATE: ${patient.date}`);
-  lines.push(`NAME: ${patient.name}`);
-  lines.push(`AGE/SEX: ____________________ / ${patient.gender}`);
-  lines.push(`REFERRED BY: ${USG_KUB_REFERRED_BY_DEFAULT}`);
+  lines.push(
+    ...buildUsgKubHeaderTable({
+      labNo,
+      date: patient.date,
+      name: patient.name,
+      ageSex,
+      referredBy
+    })
+  );
   lines.push("");
   lines.push("USG KUB");
   lines.push("");

@@ -1127,6 +1127,26 @@ export async function POST(request: NextRequest) {
       "examDate",
       "date"
     ]);
+    const rawPatientAge = getFieldValue(patientSource, [
+      "patient_age",
+      "patientAge",
+      "age"
+    ]);
+    const rawPatientLabNo = getFieldValue(patientSource, [
+      "patient_lab_no",
+      "patientLabNo",
+      "lab_no",
+      "labNo",
+      "lab_number",
+      "labNumber"
+    ]);
+    const rawReferredBy = getFieldValue(patientSource, [
+      "referred_by",
+      "referredBy",
+      "referrer",
+      "referrer_name",
+      "referrerName"
+    ]);
 
     const normalizedGender = normalizeGender(rawPatientGender);
     let effectiveGender = templateGender;
@@ -1189,7 +1209,10 @@ export async function POST(request: NextRequest) {
     const patient = {
       name: rawPatientName,
       gender: genderLabelFromKey(effectiveGender),
-      date: rawExamDate
+      date: rawExamDate,
+      age: rawPatientAge,
+      labNo: rawPatientLabNo,
+      referredBy: rawReferredBy
     };
 
     if (template.id === CUSTOM_TEMPLATE_ID) {
