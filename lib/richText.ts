@@ -11,7 +11,7 @@ type TextStyle = {
   underline: boolean;
 };
 
-const BLOCK_TAGS = new Set(["DIV", "P"]);
+const BLOCK_TAGS = new Set(["DIV", "P", "LI", "TR"]);
 
 function mergeStyle(base: TextStyle, overrides: Partial<TextStyle>) {
   return {
@@ -72,8 +72,13 @@ function walkNodes(
 
   const nextStyle = styleFromElement(element, style);
   const isBlock = BLOCK_TAGS.has(tag);
+  const isTableCell = tag === "TD" || tag === "TH";
 
   element.childNodes.forEach((child) => walkNodes(child, nextStyle, segments));
+
+  if (isTableCell) {
+    segments.push({ text: "\t", ...style });
+  }
 
   if (isBlock) {
     segments.push({ text: "\n", ...style });

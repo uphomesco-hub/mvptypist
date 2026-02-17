@@ -104,6 +104,7 @@ const REPORT_HEADINGS = [
   "Adnexa:"
 ];
 const IMPRESSION_PATTERN = /^(impression:|significant findings\s*:)/i;
+const KUB_TABLE_MARKER = "__KUB_HEADER_TABLE_HTML__::";
 const SKIP_LINE_PATTERNS = [
   /^name:/i,
   /^sonography\b/i,
@@ -338,13 +339,120 @@ function isSkippableLine(trimmedLine: string) {
   return SKIP_LINE_PATTERNS.some((pattern) => pattern.test(trimmedLine));
 }
 
+type KubHeaderRow = [string, string, string, string];
+
+function normalizeKubHeaderLabel(value: string) {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function isKubHeaderRows(rows: KubHeaderRow[]) {
+  if (rows.length < 3) return false;
+  return (
+    normalizeKubHeaderLabel(rows[0][0]) === "lab no." &&
+    normalizeKubHeaderLabel(rows[1][0]) === "name" &&
+    normalizeKubHeaderLabel(rows[2][0]) === "referred by"
+  );
+}
+
+function parseAsciiKubRow(line: string): KubHeaderRow | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) return null;
+  const cells = trimmed
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.replace(/\s+/g, " ").trim());
+  if (cells.length < 4) return null;
+  return [cells[0] || "", cells[1] || "", cells[2] || "", cells[3] || ""];
+}
+
+function parsePipeKubRow(line: string): KubHeaderRow | null {
+  if (!line.includes("|")) return null;
+  const cells = line
+    .split("|")
+    .map((cell) => cell.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+  if (cells.length < 4) return null;
+  return [cells[0] || "", cells[1] || "", cells[2] || "", cells[3] || ""];
+}
+
+function buildKubHeaderTableHtml(rows: KubHeaderRow[]) {
+  const rowHtml = rows
+    .map((row) => {
+      const [label1, value1, label2, value2] = row;
+      if (!label2 && !value2) {
+        return `<tr><th>${escapeHtml(label1)}</th><td>${escapeHtml(value1)}</td><td colspan="2"></td></tr>`;
+      }
+      return `<tr><th>${escapeHtml(label1)}</th><td>${escapeHtml(value1)}</td><th>${escapeHtml(label2)}</th><td>${escapeHtml(value2)}</td></tr>`;
+    })
+    .join("");
+  return `<table class="kub-header-table"><tbody>${rowHtml}</tbody></table>`;
+}
+
+function injectKubHeaderTable(lines: string[]) {
+  let startIndex = -1;
+  let endIndex = -1;
+  let rows: KubHeaderRow[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    if (!/^\+[-+]+\+$/.test(lines[i].trim())) continue;
+    const parsedRows: KubHeaderRow[] = [];
+    let j = i;
+    for (; j < lines.length; j += 1) {
+      const trimmed = lines[j].trim();
+      if (!trimmed) break;
+      if (/^\+[-+]+\+$/.test(trimmed)) continue;
+      const parsed = parseAsciiKubRow(lines[j]);
+      if (parsed) {
+        parsedRows.push(parsed);
+        continue;
+      }
+      break;
+    }
+    if (parsedRows.length < 3 || !isKubHeaderRows(parsedRows.slice(0, 3))) {
+      continue;
+    }
+    startIndex = i;
+    endIndex = Math.max(i, j - 1);
+    rows = parsedRows.slice(0, 3);
+    break;
+  }
+
+  if (!rows.length) {
+    for (let i = 0; i <= lines.length - 3; i += 1) {
+      const row1 = parsePipeKubRow(lines[i]);
+      const row2 = parsePipeKubRow(lines[i + 1] || "");
+      const row3 = parsePipeKubRow(lines[i + 2] || "");
+      if (!row1 || !row2 || !row3) continue;
+      const candidateRows = [row1, row2, row3] as KubHeaderRow[];
+      if (!isKubHeaderRows(candidateRows)) continue;
+      startIndex = i;
+      endIndex = i + 2;
+      rows = candidateRows;
+      break;
+    }
+  }
+
+  if (!rows.length || startIndex < 0 || endIndex < startIndex) {
+    return lines;
+  }
+
+  const htmlTable = `${KUB_TABLE_MARKER}${buildKubHeaderTableHtml(rows)}`;
+  return [...lines.slice(0, startIndex), htmlTable, ...lines.slice(endIndex + 1)];
+}
+
 function formatReportHtml(text: string, templateId: string) {
   const defaultLines = buildDefaultLineSet(templateId);
   const defaultSectionSentences = buildDefaultSectionSentenceMap(templateId);
   const hasDefaults = defaultLines.size > 0;
-  return text
-    .split(/\r?\n/)
+  const baseLines = text.split(/\r?\n/);
+  const lines = isKubTemplateId(templateId)
+    ? injectKubHeaderTable(baseLines)
+    : baseLines;
+  return lines
     .map((line) => {
+      if (line.startsWith(KUB_TABLE_MARKER)) {
+        return line.slice(KUB_TABLE_MARKER.length);
+      }
       if (!line) return "";
       const trimmed = line.trim();
       if (IMPRESSION_PATTERN.test(trimmed)) {
@@ -389,6 +497,14 @@ function formatReportHtml(text: string, templateId: string) {
 function htmlToPlainText(html: string) {
   if (!html) return "";
   const withBreaks = html
+    .replace(/<\s*table[^>]*>/gi, "\n")
+    .replace(/<\s*\/table\s*>/gi, "\n")
+    .replace(/<\s*tr[^>]*>/gi, "")
+    .replace(/<\s*\/tr\s*>/gi, "\n")
+    .replace(/<\/\s*(td|th)\s*>[ \t]*<\s*(td|th)[^>]*>/gi, " | ")
+    .replace(/<\s*(td|th)[^>]*>/gi, "")
+    .replace(/<\s*\/\s*(td|th)\s*>/gi, "")
+    .replace(/<\s*\/?\s*(thead|tbody|tfoot)\s*>/gi, "")
     .replace(/<\s*br\s*\/?>/gi, "\n")
     .replace(/<\/div>\s*<div>/gi, "\n")
     .replace(/<\/p>\s*<p>/gi, "\n")
@@ -402,6 +518,7 @@ function htmlToPlainText(html: string) {
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, "\"")
     .replace(/&#39;/g, "'")
+    .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
