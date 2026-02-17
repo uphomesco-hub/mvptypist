@@ -70,6 +70,8 @@ const USG_END_OF_REPORT_LINE_MALE =
   "--------------------------------------------------------------END OF REPORT --------------------------------------------------------------";
 const USG_END_OF_REPORT_LINE_FEMALE =
   "------------------------------------------------END of report -----------------------------------------------------------";
+const USG_KUB_DEPARTMENT_LINE = "DEPARTMENT OF RADIO-DIAGNOSIS";
+const USG_KUB_REFERRED_BY_DEFAULT = "DR. T C SADASUKHI";
 
 const USG_LIMITATIONS_NOTE =
   "NON OBSTRUCTING URETERIC CALCULI MAY BE MISSED IN NON DILATED URETERS . SONOGRAPHY HAS ITS LIMITATIONS . IT CANNOT DETECT ALL ABNORMALITIES , SOME FINDINGS MAY BE MISSED DESPITE BEST EFFORTS OF DOCTOR . HENCE IN CASE OF ANY DISCREPANCY , KINDLY CONTACT THE UNDERSIGNED FOR REVIEW/ DISCUSSION";
@@ -136,6 +138,18 @@ const USG_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
   ovaries_main: "both ovaries appears normal",
   impression: "Chronic cholecystitis with cholilithiasis",
   correlate_clinically: ""
+};
+
+const USG_KUB_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
+  ...USG_DEFAULT_FIELDS_MALE,
+  impression: "No significant abnormality seen in KUB study",
+  correlate_clinically: "Please correlate clinically"
+};
+
+const USG_KUB_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
+  ...USG_DEFAULT_FIELDS_FEMALE,
+  impression: "No significant abnormality seen in KUB study",
+  correlate_clinically: "Please correlate clinically"
 };
 
 export const USG_FIELD_KEYS = Object.keys(
@@ -599,9 +613,12 @@ function resolvePatientInfo(patient: UsgPatientInfo, gender: UsgGender) {
 function buildConclusionLine(
   conclusion: string,
   gender: UsgGender,
-  defaults: Required<UsgFieldOverrides>
+  defaults: Required<UsgFieldOverrides>,
+  options?: { forceLabel?: string }
 ) {
-  const label = gender === "female" ? "Significant findings :" : "IMPRESSION:";
+  const label =
+    options?.forceLabel ||
+    (gender === "female" ? "Significant findings :" : "IMPRESSION:");
   const trimmed = conclusion.trim();
   if (!trimmed) {
     return ensurePeriod(`${label} ${defaults.impression}`);
@@ -830,5 +847,157 @@ export function buildUsgReport(params: {
   return lines.join("\n");
 }
 
+export function buildUsgKubReport(params: {
+  gender?: UsgGender;
+  patient?: UsgPatientInfo;
+  overrides?: UsgFieldOverrides;
+  suppressedFields?: (keyof UsgFieldOverrides)[];
+} = {}) {
+  const gender = params.gender || "male";
+  const consistency = normalizeUsgOverridesForConsistency({
+    overrides: params.overrides || {},
+    gender
+  });
+  const overrides = consistency.overrides;
+  const suppressedFields = new Set([
+    ...consistency.suppressedFields,
+    ...(params.suppressedFields || [])
+  ]);
+  const defaults =
+    gender === "female"
+      ? USG_KUB_DEFAULT_FIELDS_FEMALE
+      : USG_KUB_DEFAULT_FIELDS_MALE;
+  const patient = resolvePatientInfo(params.patient || {}, gender);
+
+  const lines: string[] = [];
+  lines.push(USG_KUB_DEPARTMENT_LINE);
+  lines.push("");
+  lines.push(`LAB NO. ____________________    DATE: ${patient.date}`);
+  lines.push(`NAME: ${patient.name}`);
+  lines.push(`AGE/SEX: ____________________ / ${patient.gender}`);
+  lines.push(`REFERRED BY: ${USG_KUB_REFERRED_BY_DEFAULT}`);
+  lines.push("");
+  lines.push("USG KUB");
+  lines.push("");
+
+  const kidneySize = resolveField(
+    overrides,
+    defaults,
+    "kidneys_size",
+    suppressedFields
+  );
+  if (kidneySize.trim()) {
+    lines.push(`Kidneys: ${ensurePeriod(kidneySize)}`);
+  }
+
+  const kidneyDetails = joinSentences([
+    resolveField(overrides, defaults, "kidneys_main", suppressedFields),
+    resolveField(overrides, defaults, "kidneys_cmd", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "kidneys_cortical_scarring",
+      suppressedFields
+    ),
+    resolveField(overrides, defaults, "kidneys_parenchyma", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "kidneys_calculus_hydronephrosis",
+      suppressedFields
+    )
+  ]);
+  if (kidneyDetails) {
+    lines.push(kidneySize.trim() ? kidneyDetails : `Kidneys: ${kidneyDetails}`);
+  }
+
+  const bladderLine = joinSentences([
+    resolveField(overrides, defaults, "bladder_main", suppressedFields),
+    resolveField(overrides, defaults, "bladder_mass_calculus", suppressedFields)
+  ]);
+  if (bladderLine) {
+    lines.push(`Urinary Bladder: ${bladderLine}`);
+  }
+
+  if (gender === "male") {
+    const prostateMain = resolveField(
+      overrides,
+      defaults,
+      "prostate_main",
+      suppressedFields
+    );
+    if (prostateMain.trim()) {
+      lines.push(`Prostate: ${ensurePeriod(prostateMain)}`);
+    }
+    const prostateEcho = resolveField(
+      overrides,
+      defaults,
+      "prostate_echotexture",
+      suppressedFields
+    );
+    if (prostateEcho.trim()) {
+      lines.push(ensurePeriod(prostateEcho));
+    }
+  } else {
+    const uterusMain = resolveField(
+      overrides,
+      defaults,
+      "uterus_main",
+      suppressedFields
+    );
+    const uterusMyometrium = resolveField(
+      overrides,
+      defaults,
+      "uterus_myometrium",
+      suppressedFields
+    );
+    const endometrium = resolveField(
+      overrides,
+      defaults,
+      "endometrium_measurement_mm",
+      suppressedFields
+    );
+    const endometriumIsSuppressed = suppressedFields.has(
+      "endometrium_measurement_mm"
+    );
+    const endometriumLine = endometrium.trim()
+      ? `Endometrial echoes are central (${endometrium} mm).`
+      : endometriumIsSuppressed
+      ? ""
+      : "Endometrial echoes are central.";
+    const uterusLine = joinFragments([
+      ensurePeriod(uterusMain),
+      ensurePeriod(uterusMyometrium),
+      endometriumLine
+    ]);
+    if (uterusLine) {
+      lines.push(`Uterus: ${uterusLine}`);
+    }
+  }
+
+  lines.push(
+    buildConclusionLine(
+      resolveField(overrides, defaults, "impression", suppressedFields),
+      gender,
+      defaults,
+      { forceLabel: "IMPRESSION:" }
+    )
+  );
+
+  const correlation = resolveField(
+    overrides,
+    defaults,
+    "correlate_clinically",
+    suppressedFields
+  );
+  if (correlation.trim()) {
+    lines.push(ensurePeriod(correlation));
+  }
+
+  return lines.join("\n");
+}
+
 export const USG_ABDOMEN_MALE_TEMPLATE = buildUsgReport({ gender: "male" });
 export const USG_ABDOMEN_FEMALE_TEMPLATE = buildUsgReport({ gender: "female" });
+export const USG_KUB_MALE_TEMPLATE = buildUsgKubReport({ gender: "male" });
+export const USG_KUB_FEMALE_TEMPLATE = buildUsgKubReport({ gender: "female" });

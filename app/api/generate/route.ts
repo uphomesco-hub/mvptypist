@@ -4,9 +4,12 @@ import { getTemplateById } from "@/lib/templates";
 import { rateLimit } from "@/lib/rateLimit";
 import {
   buildUsgReport,
+  buildUsgKubReport,
   normalizeUsgOverridesForConsistency,
   USG_ABDOMEN_FEMALE_TEMPLATE,
   USG_ABDOMEN_MALE_TEMPLATE,
+  USG_KUB_FEMALE_TEMPLATE,
+  USG_KUB_MALE_TEMPLATE,
   USG_FIELD_KEYS,
   type UsgFieldOverrides,
   type UsgGender
@@ -622,6 +625,32 @@ const USG_ABDOMEN_OTHER_OBS_KEYWORDS = [
   "ivc"
 ];
 
+const USG_KUB_OTHER_OBS_KEYWORDS = [
+  "kub",
+  "kidney",
+  "kidneys",
+  "renal",
+  "ureter",
+  "ureteric",
+  "pelvicalyceal",
+  "hydronephrosis",
+  "bladder",
+  "urinary bladder",
+  "prevoid",
+  "postvoid",
+  "diverticulum",
+  "prostate",
+  "prostatic",
+  "uterus",
+  "uterine",
+  "myometrium",
+  "endometrium",
+  "endometrial",
+  "calculus",
+  "calculi",
+  "concretion"
+];
+
 const OTHER_OBSERVATION_NOISE_PATTERNS = [
   /\b(hello|hi|thanks|thank you|okay|ok|hmm|huh|bye)\b/i,
   /\b(start|stop|pause|resume)\s+(record(ing)?|dictation)\b/i,
@@ -631,7 +660,10 @@ const OTHER_OBSERVATION_NOISE_PATTERNS = [
   /\b(doctor|dr\.)\s+(please|kindly)\b/i
 ];
 
-function isRelevantUsgOtherObservation(text: string) {
+function isRelevantUsgOtherObservation(
+  text: string,
+  keywordScope: string[] = USG_ABDOMEN_OTHER_OBS_KEYWORDS
+) {
   const normalized = normalizeOtherObservationLine(text).toLowerCase();
   if (!normalized || normalized.length < 4) return false;
   if (normalized.length > 260) return false;
@@ -644,12 +676,15 @@ function isRelevantUsgOtherObservation(text: string) {
   if (OTHER_OBSERVATION_NOISE_PATTERNS.some((pattern) => pattern.test(normalized))) {
     return false;
   }
-  return USG_ABDOMEN_OTHER_OBS_KEYWORDS.some((keyword) =>
+  return keywordScope.some((keyword) =>
     normalized.includes(keyword)
   );
 }
 
-function extractOtherObservations(parsed: Record<string, unknown>) {
+function extractOtherObservations(
+  parsed: Record<string, unknown>,
+  keywordScope: string[] = USG_ABDOMEN_OTHER_OBS_KEYWORDS
+) {
   const candidates = [
     parsed.other_observations,
     parsed.otherObservations,
@@ -684,7 +719,7 @@ function extractOtherObservations(parsed: Record<string, unknown>) {
   const accepted: string[] = [];
   let droppedCount = 0;
   for (const value of unique.filter(Boolean)) {
-    if (isRelevantUsgOtherObservation(value)) {
+    if (isRelevantUsgOtherObservation(value, keywordScope)) {
       accepted.push(value);
       continue;
     }
@@ -735,16 +770,47 @@ function genderLabelFromKey(gender: UsgGender) {
   return gender === "female" ? "Female" : "Male";
 }
 
+function isUsgKubTemplateId(templateId: string) {
+  return templateId === "USG_KUB_MALE" || templateId === "USG_KUB_FEMALE";
+}
+
 function isUsgTemplateId(templateId: string) {
   return (
     templateId === "USG_ABDOMEN_MALE" ||
     templateId === "USG_ABDOMEN_FEMALE" ||
+    templateId === "USG_KUB_MALE" ||
+    templateId === "USG_KUB_FEMALE" ||
     templateId === CUSTOM_TEMPLATE_ID
   );
 }
 
 function templateGenderFromId(templateId: string): UsgGender {
-  return templateId === "USG_ABDOMEN_FEMALE" ? "female" : "male";
+  return templateId === "USG_ABDOMEN_FEMALE" ||
+    templateId === "USG_KUB_FEMALE"
+    ? "female"
+    : "male";
+}
+
+function getUsgTemplateText(templateId: string, gender: UsgGender) {
+  if (templateId === "USG_KUB_MALE" || templateId === "USG_KUB_FEMALE") {
+    return gender === "female"
+      ? USG_KUB_FEMALE_TEMPLATE
+      : USG_KUB_MALE_TEMPLATE;
+  }
+  return gender === "female"
+    ? USG_ABDOMEN_FEMALE_TEMPLATE
+    : USG_ABDOMEN_MALE_TEMPLATE;
+}
+
+function getUsgObservationKeywordScope(templateId: string) {
+  if (isUsgKubTemplateId(templateId)) {
+    return USG_KUB_OTHER_OBS_KEYWORDS;
+  }
+  return USG_ABDOMEN_OTHER_OBS_KEYWORDS;
+}
+
+function getUsgTemplateScopeLabel(templateId: string) {
+  return isUsgKubTemplateId(templateId) ? "USG KUB" : "USG Whole Abdomen";
 }
 
 async function callGemini(params: {
@@ -927,10 +993,11 @@ export async function POST(request: NextRequest) {
     const customTemplateMapping = sanitizeCustomTemplateMapping(
       customTemplateMappingRaw || ""
     );
-    const usgTemplateText =
-      templateGender === "female"
-        ? USG_ABDOMEN_FEMALE_TEMPLATE
-        : USG_ABDOMEN_MALE_TEMPLATE;
+    const isKUBTemplate = isUsgKubTemplateId(template.id);
+    const usgTemplateText = getUsgTemplateText(template.id, templateGender);
+    const usgTemplateScopeLabel = getUsgTemplateScopeLabel(template.id);
+    const usgFilterScopeLabel = isKUBTemplate ? "USG-KUB" : "USG-abdomen";
+    const usgKeywordScope = getUsgObservationKeywordScope(template.id);
     const hasApprovedProfileExtraction = Boolean(
       isCustomTemplate &&
         isCustomTemplateProfileApproved &&
@@ -947,20 +1014,29 @@ export async function POST(request: NextRequest) {
     const profileSchemaReturnSnippet = hasApprovedProfileExtraction
       ? `,\n  \"extra_fields\": ${profileExtraFieldsSchemaText},\n  \"unmapped_findings\": [],\n  \"extraction_confidence\": 0`
       : `,\n  \"unmapped_findings\": []`;
+    const usgFocusRuleNote = isKUBTemplate
+      ? `\n- This is a KUB template. Prioritize kidneys, urinary bladder, and ${templateGender === "female" ? "uterus" : "prostate"} findings; keep non-KUB organ fields empty unless explicitly dictated.`
+      : "";
+    const usgOtherObservationScope = isKUBTemplate
+      ? "USG KUB-relevant findings"
+      : "USG whole-abdomen relevant findings";
 
     const systemText = isUsg
-    ? `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Return JSON only. No markdown, no code fences.\n- Use the provided USG Whole Abdomen template for context, but do NOT output it directly.\n- Output MUST include the full fields object with ALL keys present. Do NOT omit keys.\n- Fill ONLY the fields object, patient_name, patient_gender, exam_date, and other_observations.\n- Ignore non-dictation audio (patient conversation, small talk, procedure chatter). Extract only reportable findings.\n- If a finding does not fit the provided canonical fields, put it in other_observations.\n- other_observations MUST contain only USG whole-abdomen relevant findings. Do NOT include chatter/noise/admin instructions.${profileSystemRuleNote}\n- If a field is not explicitly mentioned, return an empty string for that field.\n- Exception for impression: if not explicitly spoken, infer a concise impression from abnormal extracted findings.\n- If extracted findings are all normal/unremarkable, keep impression as empty string.\n- Strings must be valid JSON (no unescaped newlines).\n- If uncertain, write "[Unclear - needs review]" and add a flag.\n- For endometrium_measurement_mm, return numbers only (no units).\n- Organ-state consistency is mandatory: if an organ is not visualized, surgically absent, or not assessed, put that statement in the organ main field and keep dependent detail fields empty.\n- Example: if uterus is absent/not visualized (e.g., post-hysterectomy), keep uterus_myometrium and endometrium_measurement_mm empty.\n- Use professional radiology terminology only; avoid colloquial wording.\n- Convert colloquial \"stone/stones\" wording to medical terms (\"calculus/calculi\") with correct singular/plural.\n- Use formal diagnostic terms in impression when appropriate (e.g., \"left nephrolithiasis\", \"cholelithiasis\").\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "${template.id}",\n  "patient_name": "",\n  "patient_gender": "",\n  "exam_date": "",\n  "fields": {\n    "liver_main": "",\n    "liver_focal_lesion": "",\n    "liver_hepatic_veins": "",\n    "liver_ihbr": "",\n    "liver_portal_vein": "",\n    "gallbladder_main": "",\n    "gallbladder_calculus_sludge": "",\n    "cbd_main": "",\n    "pancreas_main": "",\n    "pancreas_echotexture": "",\n    "spleen_main": "",\n    "spleen_focal_lesion": "",\n    "kidneys_size": "",\n    "kidneys_main": "",\n    "kidneys_cmd": "",\n    "kidneys_cortical_scarring": "",\n    "kidneys_parenchyma": "",\n    "kidneys_calculus_hydronephrosis": "",\n    "bladder_main": "",\n    "bladder_mass_calculus": "",\n    "prostate_main": "",\n    "prostate_echotexture": "",\n    "uterus_main": "",\n    "uterus_myometrium": "",\n    "endometrium_measurement_mm": "",\n    "ovaries_main": "",\n    "adnexal_mass": "",\n    "peritoneal_fluid": "",\n    "lymph_nodes": "",\n    "impression": "",\n    "correlate_clinically": ""\n  },\n  "other_observations": []${profileSchemaReturnSnippet},\n  "flags": [],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`
+    ? `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Return JSON only. No markdown, no code fences.\n- Use the provided ${usgTemplateScopeLabel} template for context, but do NOT output it directly.\n- Output MUST include the full fields object with ALL keys present. Do NOT omit keys.\n- Fill ONLY the fields object, patient_name, patient_gender, exam_date, and other_observations.\n- Ignore non-dictation audio (patient conversation, small talk, procedure chatter). Extract only reportable findings.\n- If a finding does not fit the provided canonical fields, put it in other_observations.\n- other_observations MUST contain only ${usgOtherObservationScope}. Do NOT include chatter/noise/admin instructions.${profileSystemRuleNote}${usgFocusRuleNote}\n- If a field is not explicitly mentioned, return an empty string for that field.\n- Exception for impression: if not explicitly spoken, infer a concise impression from abnormal extracted findings.\n- If extracted findings are all normal/unremarkable, keep impression as empty string.\n- Strings must be valid JSON (no unescaped newlines).\n- If uncertain, write "[Unclear - needs review]" and add a flag.\n- For endometrium_measurement_mm, return numbers only (no units).\n- Organ-state consistency is mandatory: if an organ is not visualized, surgically absent, or not assessed, put that statement in the organ main field and keep dependent detail fields empty.\n- Example: if uterus is absent/not visualized (e.g., post-hysterectomy), keep uterus_myometrium and endometrium_measurement_mm empty.\n- Use professional radiology terminology only; avoid colloquial wording.\n- Convert colloquial \"stone/stones\" wording to medical terms (\"calculus/calculi\") with correct singular/plural.\n- Use formal diagnostic terms in impression when appropriate (e.g., \"left nephrolithiasis\", \"cholelithiasis\").\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "${template.id}",\n  "patient_name": "",\n  "patient_gender": "",\n  "exam_date": "",\n  "fields": {\n    "liver_main": "",\n    "liver_focal_lesion": "",\n    "liver_hepatic_veins": "",\n    "liver_ihbr": "",\n    "liver_portal_vein": "",\n    "gallbladder_main": "",\n    "gallbladder_calculus_sludge": "",\n    "cbd_main": "",\n    "pancreas_main": "",\n    "pancreas_echotexture": "",\n    "spleen_main": "",\n    "spleen_focal_lesion": "",\n    "kidneys_size": "",\n    "kidneys_main": "",\n    "kidneys_cmd": "",\n    "kidneys_cortical_scarring": "",\n    "kidneys_parenchyma": "",\n    "kidneys_calculus_hydronephrosis": "",\n    "bladder_main": "",\n    "bladder_mass_calculus": "",\n    "prostate_main": "",\n    "prostate_echotexture": "",\n    "uterus_main": "",\n    "uterus_myometrium": "",\n    "endometrium_measurement_mm": "",\n    "ovaries_main": "",\n    "adnexal_mass": "",\n    "peritoneal_fluid": "",\n    "lymph_nodes": "",\n    "impression": "",\n    "correlate_clinically": ""\n  },\n  "other_observations": []${profileSchemaReturnSnippet},\n  "flags": [],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`
     : `You are a radiology documentation assistant. Follow strict rules and output JSON only.\n\nSTRICT RULES:\n- Output must contain ONLY OBSERVATIONS / FINDINGS.\n- Do NOT include Impression, Conclusion, Diagnosis, Advice, Plan, or Recommendations.\n- Do NOT add normal findings unless explicitly spoken in the audio.\n- Do NOT infer missing info. If uncertain, write "[Unclear - needs review]" and add a flag.\n- Ignore non-dictation audio (patient conversation, small talk, procedure chatter). Extract only reportable findings.\n- Pay special attention to negations, laterality, and measurements/units.\n\nReturn JSON ONLY with schema:\n{\n  "template_id": "...",\n  "observations": "...",\n  "flags": ["..."],\n  "disclaimer": "${DEFAULT_DISCLAIMER}"\n}`;
     const usgModeNote =
     template.id === CUSTOM_TEMPLATE_ID
       ? `\nCUSTOM TEMPLATE MODE:\n- Extract canonical USG fields only.\n- Do NOT attempt to format the final custom report layout.\n- Leave unmentioned fields empty.${hasApprovedProfileExtraction ? `\n- Profile schema enabled with extra field ids: ${profileExtraFieldIds.join(", ")}` : ""}`
       : "";
     const profileUserGuidance = hasApprovedProfileExtraction
-    ? `\n- extra_fields: include ALL profile ids as keys even if empty.\n- unmapped_findings: include only clinically relevant USG-abdomen findings not covered by canonical/profile fields.\n- extraction_confidence: number between 0 and 1 for extraction confidence.`
+    ? `\n- extra_fields: include ALL profile ids as keys even if empty.\n- unmapped_findings: include only clinically relevant ${usgFilterScopeLabel} findings not covered by canonical/profile fields.\n- extraction_confidence: number between 0 and 1 for extraction confidence.`
     : "";
+    const usgFocusUserNote = isKUBTemplate
+      ? `\nKUB FOCUS:\n- Primary sections are kidneys, urinary bladder, and ${templateGender === "female" ? "uterus" : "prostate"}.\n- Keep non-KUB organ fields empty unless explicitly dictated.`
+      : "";
 
     const userText = isUsg
-    ? `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}${usgModeNote}\n\nPATIENT INFO:\n- patient_name: full patient name as spoken (if mentioned)\n- patient_gender: male/female as spoken (if mentioned)\n- exam_date: date as spoken (if mentioned)\n\nTERMINOLOGY STYLE:\n- Use professional radiology language only.\n- Avoid colloquial terms (e.g., do not output \"stone\"; use \"calculus/calculi\" as appropriate).\n- Prefer formal impression phrasing when appropriate (e.g., \"left nephrolithiasis\").\n\nFIELD GUIDANCE (values plug into the report builder):\n- liver_main: sentence/phrase describing liver size/echotexture\n- liver_focal_lesion: full sentence\n- liver_hepatic_veins: full sentence\n- liver_ihbr: full sentence\n- liver_portal_vein: full sentence\n- gallbladder_main: sentence/phrase describing wall/contour\n- gallbladder_calculus_sludge: full sentence\n- cbd_main: full sentence (e.g., "CBD is normal." or "CBD measures 6 mm and is normal.")\n- pancreas_main: sentence/phrase for size/shape/contour\n- pancreas_echotexture: full sentence\n- spleen_main: sentence/phrase\n- spleen_focal_lesion: full sentence\n- kidneys_size: include right/left measurements if mentioned (e.g., "Right Kidney    : 116x46 mm      Left kidney   :   105x52 mm")\n- kidneys_main: full sentence\n- kidneys_cmd: full sentence\n- kidneys_cortical_scarring: full sentence\n- kidneys_parenchyma: full sentence\n- kidneys_calculus_hydronephrosis: full sentence\n- bladder_main: sentence/phrase\n- bladder_mass_calculus: full sentence\n- prostate_main: full sentence (male only)\n- prostate_echotexture: full sentence (male only)\n- uterus_main: full sentence (female only)\n- uterus_myometrium: full sentence (female only)\n- endometrium_measurement_mm: number only (female only)\n- ovaries_main: full sentence (female only)\n- adnexal_mass: full sentence (female only)\n- peritoneal_fluid: full sentence\n- lymph_nodes: full sentence\n- impression: if spoken, use it. If not spoken, infer concise impression from abnormal extracted findings using professional terminology. If all findings are normal/unremarkable, keep empty.\n- correlate_clinically: "Please correlate clinically." if dictated; empty if not mentioned\n- other_observations: only USG whole-abdomen findings not fitting canonical keys (array of concise strings). Exclude noise/chatter/admin lines.\n- Organ-state rule: if any organ is not visualized, surgically absent, or not assessed, state that in organ main field and leave dependent detail fields empty (example: uterus absent -> uterus_myometrium=\"\", endometrium_measurement_mm=\"\").${profileUserGuidance}\n\nAllowed field keys: ${USG_FIELD_KEYS.join(", ")}\n\nUSG WHOLE ABDOMEN TEMPLATE (for context only; do not output directly):\n${usgTemplateText}\n`
+    ? `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}${usgModeNote}${usgFocusUserNote}\n\nPATIENT INFO:\n- patient_name: full patient name as spoken (if mentioned)\n- patient_gender: male/female as spoken (if mentioned)\n- exam_date: date as spoken (if mentioned)\n\nTERMINOLOGY STYLE:\n- Use professional radiology language only.\n- Avoid colloquial terms (e.g., do not output \"stone\"; use \"calculus/calculi\" as appropriate).\n- Prefer formal impression phrasing when appropriate (e.g., \"left nephrolithiasis\").\n\nFIELD GUIDANCE (values plug into the report builder):\n- liver_main: sentence/phrase describing liver size/echotexture\n- liver_focal_lesion: full sentence\n- liver_hepatic_veins: full sentence\n- liver_ihbr: full sentence\n- liver_portal_vein: full sentence\n- gallbladder_main: sentence/phrase describing wall/contour\n- gallbladder_calculus_sludge: full sentence\n- cbd_main: full sentence (e.g., "CBD is normal." or "CBD measures 6 mm and is normal.")\n- pancreas_main: sentence/phrase for size/shape/contour\n- pancreas_echotexture: full sentence\n- spleen_main: sentence/phrase\n- spleen_focal_lesion: full sentence\n- kidneys_size: include right/left measurements if mentioned (e.g., "Right Kidney    : 116x46 mm      Left kidney   :   105x52 mm")\n- kidneys_main: full sentence\n- kidneys_cmd: full sentence\n- kidneys_cortical_scarring: full sentence\n- kidneys_parenchyma: full sentence\n- kidneys_calculus_hydronephrosis: full sentence\n- bladder_main: sentence/phrase\n- bladder_mass_calculus: full sentence\n- prostate_main: full sentence (male only)\n- prostate_echotexture: full sentence (male only)\n- uterus_main: full sentence (female only)\n- uterus_myometrium: full sentence (female only)\n- endometrium_measurement_mm: number only (female only)\n- ovaries_main: full sentence (female only)\n- adnexal_mass: full sentence (female only)\n- peritoneal_fluid: full sentence\n- lymph_nodes: full sentence\n- impression: if spoken, use it. If not spoken, infer concise impression from abnormal extracted findings using professional terminology. If all findings are normal/unremarkable, keep empty.\n- correlate_clinically: "Please correlate clinically." if dictated; empty if not mentioned\n- other_observations: only ${usgOtherObservationScope} not fitting canonical keys (array of concise strings). Exclude noise/chatter/admin lines.\n- Organ-state rule: if any organ is not visualized, surgically absent, or not assessed, state that in organ main field and leave dependent detail fields empty (example: uterus absent -> uterus_myometrium=\"\", endometrium_measurement_mm=\"\").${profileUserGuidance}\n\nAllowed field keys: ${USG_FIELD_KEYS.join(", ")}\n\n${usgTemplateScopeLabel.toUpperCase()} TEMPLATE (for context only; do not output directly):\n${usgTemplateText}\n`
     : `Template: ${template.title} (${template.id})\nAllowed topics: ${template.allowedTopics.join(", ")}\nPreferred order: ${template.headings?.join(" > ") || "Use logical order"}\n\nForbidden output sections: Impression, Conclusion, Diagnosis, Advice, Plan, Recommendations.\nOnly return OBSERVATIONS / FINDINGS.\n\nDo NOT add facts that are not explicitly spoken in the audio.`;
 
     let rawText: string;
@@ -1022,10 +1098,10 @@ export async function POST(request: NextRequest) {
     const {
       observations: otherObservations,
       droppedCount: droppedOtherObservationsCount
-    } = extractOtherObservations(parsedUsg);
+    } = extractOtherObservations(parsedUsg, usgKeywordScope);
     const unmappedFindingsRaw = extractUnmappedFindings(parsedUsg);
     const unmappedFindingsFiltered = unmappedFindingsRaw.filter(
-      isRelevantUsgOtherObservation
+      (finding) => isRelevantUsgOtherObservation(finding, usgKeywordScope)
     );
     const droppedUnmappedFindingsCount =
       unmappedFindingsRaw.length - unmappedFindingsFiltered.length;
@@ -1101,12 +1177,12 @@ export async function POST(request: NextRequest) {
     }
     if (droppedOtherObservationsCount > 0) {
       extraFlags.push(
-        "Filtered non-USG-abdomen or noisy lines from OTHER OBSERVATIONS."
+        `Filtered non-${usgFilterScopeLabel} or noisy lines from OTHER OBSERVATIONS.`
       );
     }
     if (droppedUnmappedFindingsCount > 0) {
       extraFlags.push(
-        "Filtered non-USG-abdomen or noisy lines from unmapped findings."
+        `Filtered non-${usgFilterScopeLabel} or noisy lines from unmapped findings.`
       );
     }
 
@@ -1176,6 +1252,13 @@ export async function POST(request: NextRequest) {
           );
         }
       }
+    } else if (isUsgKubTemplateId(template.id)) {
+      observationsRaw = buildUsgKubReport({
+        gender: effectiveGender,
+        patient,
+        overrides,
+        suppressedFields: normalizedUsg.suppressedFields
+      });
     } else {
       observationsRaw = buildUsgReport({
         gender: effectiveGender,

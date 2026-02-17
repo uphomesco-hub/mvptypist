@@ -46,7 +46,9 @@ import {
 import {
   type UsgGender,
   USG_ABDOMEN_FEMALE_TEMPLATE,
-  USG_ABDOMEN_MALE_TEMPLATE
+  USG_ABDOMEN_MALE_TEMPLATE,
+  USG_KUB_FEMALE_TEMPLATE,
+  USG_KUB_MALE_TEMPLATE
 } from "@/lib/usgTemplate";
 import {
   CUSTOM_TEMPLATE_ID,
@@ -100,7 +102,17 @@ const REPORT_HEADINGS = [
   "Adnexa:"
 ];
 const IMPRESSION_PATTERN = /^(impression:|significant findings\s*:)/i;
-const SKIP_LINE_PATTERNS = [/^name:/i, /^sonography\b/i, /^-{6,}/, /^non obstructing/i];
+const SKIP_LINE_PATTERNS = [
+  /^name:/i,
+  /^sonography\b/i,
+  /^usg\s*kub\b/i,
+  /^department\s+of\s+radio-?diagnosis\b/i,
+  /^lab\s*no\b/i,
+  /^age\s*\/?\s*sex\b/i,
+  /^referred\s+by\b/i,
+  /^-{6,}/,
+  /^non obstructing/i
+];
 
 const TEMPLATE_VISUALS = [
   { icon: "air", iconWrap: "bg-blue-50 text-primary dark:bg-blue-900/20", accent: "text-primary" },
@@ -143,6 +155,8 @@ function escapeHtml(value: string) {
 function getDefaultTemplateText(templateId: string) {
   if (templateId === "USG_ABDOMEN_FEMALE") return USG_ABDOMEN_FEMALE_TEMPLATE;
   if (templateId === "USG_ABDOMEN_MALE") return USG_ABDOMEN_MALE_TEMPLATE;
+  if (templateId === "USG_KUB_FEMALE") return USG_KUB_FEMALE_TEMPLATE;
+  if (templateId === "USG_KUB_MALE") return USG_KUB_MALE_TEMPLATE;
   return "";
 }
 

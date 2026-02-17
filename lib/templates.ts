@@ -153,6 +153,42 @@ export const templates: Template[] = [
     ]
   },
   {
+    id: "USG_KUB_MALE",
+    title: "USG KUB (Male)",
+    allowedTopics: [
+      "Right kidney",
+      "Left kidney",
+      "Urinary bladder",
+      "Prostate",
+      "Impression",
+      "Correlation"
+    ],
+    headings: [
+      "Kidneys",
+      "Urinary Bladder",
+      "Prostate",
+      "Impression"
+    ]
+  },
+  {
+    id: "USG_KUB_FEMALE",
+    title: "USG KUB (Female)",
+    allowedTopics: [
+      "Right kidney",
+      "Left kidney",
+      "Urinary bladder",
+      "Uterus",
+      "Impression",
+      "Correlation"
+    ],
+    headings: [
+      "Kidneys",
+      "Urinary Bladder",
+      "Uterus",
+      "Impression"
+    ]
+  },
+  {
     id: "USG_ABDOMEN_CUSTOM",
     title: "USG Whole Abdomen (Custom)",
     allowedTopics: [
