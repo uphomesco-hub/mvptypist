@@ -743,6 +743,224 @@ type IssueSummaryPayload = {
   source: "ai" | "fallback";
 };
 
+type DiffOpKind = "equal" | "remove" | "add";
+
+type DiffOp<T> = {
+  kind: DiffOpKind;
+  value: T;
+};
+
+type AdminDiffRow = {
+  key: string;
+  kind: "equal" | "changed" | "removed" | "added";
+  leftLineNo: number | null;
+  rightLineNo: number | null;
+  leftHtml: string;
+  rightHtml: string;
+};
+
+function lcsDiff<T>(left: T[], right: T[], equals: (a: T, b: T) => boolean) {
+  const rows = left.length;
+  const cols = right.length;
+  const dp: number[][] = Array.from({ length: rows + 1 }, () =>
+    Array<number>(cols + 1).fill(0)
+  );
+
+  for (let i = 1; i <= rows; i += 1) {
+    for (let j = 1; j <= cols; j += 1) {
+      if (equals(left[i - 1], right[j - 1])) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  const ops: DiffOp<T>[] = [];
+  let i = rows;
+  let j = cols;
+
+  while (i > 0 || j > 0) {
+    if (i > 0 && j > 0 && equals(left[i - 1], right[j - 1])) {
+      ops.push({ kind: "equal", value: left[i - 1] });
+      i -= 1;
+      j -= 1;
+      continue;
+    }
+    if (j > 0 && (i === 0 || dp[i][j - 1] > dp[i - 1][j])) {
+      ops.push({ kind: "add", value: right[j - 1] });
+      j -= 1;
+      continue;
+    }
+    if (i > 0) {
+      ops.push({ kind: "remove", value: left[i - 1] });
+      i -= 1;
+    }
+  }
+
+  return ops.reverse();
+}
+
+function splitDiffLines(text: string) {
+  const normalized = String(text || "").replace(/\r/g, "");
+  if (!normalized) return [];
+  return normalized.split("\n");
+}
+
+function tokenizeDiffWords(line: string) {
+  return line.split(/(\s+)/).filter((token) => token.length > 0);
+}
+
+function buildInlineWordDiffHtml(leftLine: string, rightLine: string) {
+  const leftTokens = tokenizeDiffWords(leftLine);
+  const rightTokens = tokenizeDiffWords(rightLine);
+  const ops = lcsDiff(leftTokens, rightTokens, (a, b) => a === b);
+  const leftParts: string[] = [];
+  const rightParts: string[] = [];
+
+  for (const op of ops) {
+    const safeValue = escapeHtml(op.value);
+    if (op.kind === "equal") {
+      leftParts.push(safeValue);
+      rightParts.push(safeValue);
+      continue;
+    }
+    if (op.kind === "remove") {
+      leftParts.push(
+        `<span style="background:#fee2e2;color:#b91c1c;text-decoration:line-through;border-radius:2px;padding:0 2px;">${safeValue}</span>`
+      );
+      continue;
+    }
+    rightParts.push(
+      `<span style="background:#dcfce7;color:#15803d;border-radius:2px;padding:0 2px;">${safeValue}</span>`
+    );
+  }
+
+  return {
+    leftHtml: leftParts.join(""),
+    rightHtml: rightParts.join("")
+  };
+}
+
+function buildAdminDiffRows(aiText: string, finalText: string) {
+  const leftLines = splitDiffLines(aiText);
+  const rightLines = splitDiffLines(finalText);
+  if (!leftLines.length && !rightLines.length) return [] as AdminDiffRow[];
+
+  const ops = lcsDiff(leftLines, rightLines, (a, b) => a === b);
+  const rows: AdminDiffRow[] = [];
+  let leftLineNo = 0;
+  let rightLineNo = 0;
+  let rowIndex = 0;
+
+  for (let i = 0; i < ops.length; i += 1) {
+    const current = ops[i];
+
+    if (current.kind === "equal") {
+      leftLineNo += 1;
+      rightLineNo += 1;
+      const escaped = escapeHtml(current.value) || "&nbsp;";
+      rows.push({
+        key: `eq-${rowIndex}`,
+        kind: "equal",
+        leftLineNo,
+        rightLineNo,
+        leftHtml: escaped,
+        rightHtml: escaped
+      });
+      rowIndex += 1;
+      continue;
+    }
+
+    const chunk: DiffOp<string>[] = [];
+    while (i < ops.length && ops[i].kind !== "equal") {
+      chunk.push(ops[i] as DiffOp<string>);
+      i += 1;
+    }
+    i -= 1;
+
+    const removed: Array<{ lineNo: number; text: string }> = [];
+    const added: Array<{ lineNo: number; text: string }> = [];
+
+    for (const op of chunk) {
+      if (op.kind === "remove") {
+        leftLineNo += 1;
+        removed.push({ lineNo: leftLineNo, text: op.value });
+      } else if (op.kind === "add") {
+        rightLineNo += 1;
+        added.push({ lineNo: rightLineNo, text: op.value });
+      }
+    }
+
+    const maxLen = Math.max(removed.length, added.length);
+    for (let index = 0; index < maxLen; index += 1) {
+      const left = removed[index] || null;
+      const right = added[index] || null;
+
+      if (left && right) {
+        const inlineDiff = buildInlineWordDiffHtml(left.text, right.text);
+        rows.push({
+          key: `chg-${rowIndex}`,
+          kind: "changed",
+          leftLineNo: left.lineNo,
+          rightLineNo: right.lineNo,
+          leftHtml: inlineDiff.leftHtml || "&nbsp;",
+          rightHtml: inlineDiff.rightHtml || "&nbsp;"
+        });
+        rowIndex += 1;
+        continue;
+      }
+
+      if (left) {
+        rows.push({
+          key: `del-${rowIndex}`,
+          kind: "removed",
+          leftLineNo: left.lineNo,
+          rightLineNo: null,
+          leftHtml: `<span style="background:#fee2e2;color:#b91c1c;text-decoration:line-through;border-radius:2px;padding:0 2px;">${escapeHtml(
+            left.text
+          ) || "&nbsp;"}</span>`,
+          rightHtml: "&nbsp;"
+        });
+        rowIndex += 1;
+        continue;
+      }
+
+      if (right) {
+        rows.push({
+          key: `add-${rowIndex}`,
+          kind: "added",
+          leftLineNo: null,
+          rightLineNo: right.lineNo,
+          leftHtml: "&nbsp;",
+          rightHtml: `<span style="background:#dcfce7;color:#15803d;border-radius:2px;padding:0 2px;">${escapeHtml(
+            right.text
+          ) || "&nbsp;"}</span>`
+        });
+        rowIndex += 1;
+      }
+    }
+  }
+
+  return rows;
+}
+
+function adminDiffCellTone(
+  rowKind: AdminDiffRow["kind"],
+  side: "left" | "right"
+) {
+  if (rowKind === "changed") {
+    return side === "left" ? "bg-red-50/70" : "bg-emerald-50/70";
+  }
+  if (rowKind === "removed") {
+    return side === "left" ? "bg-red-50/70" : "bg-slate-50/70";
+  }
+  if (rowKind === "added") {
+    return side === "left" ? "bg-slate-50/70" : "bg-emerald-50/70";
+  }
+  return "bg-white dark:bg-slate-900";
+}
+
 function ownerUidFromDocPath(path: string) {
   const parts = String(path || "").split("/");
   if (parts.length >= 4 && parts[0] === "users" && parts[2] === "reports") {
@@ -1019,6 +1237,17 @@ export default function Home() {
     String(currentUser?.email || "").trim().toLowerCase() === ADMIN_EMAIL;
   const selectedAdminIssue =
     adminIssues.find((item) => item.issueId === selectedAdminIssueId) || null;
+  const selectedAdminIssueDiffRows = useMemo(
+    () =>
+      selectedAdminIssue
+        ? buildAdminDiffRows(selectedAdminIssue.aiText, selectedAdminIssue.finalText)
+        : ([] as AdminDiffRow[]),
+    [
+      selectedAdminIssue?.issueId,
+      selectedAdminIssue?.aiText,
+      selectedAdminIssue?.finalText
+    ]
+  );
   const selectedAdminIssueSummary = selectedAdminIssue
     ? issueSummaries[selectedAdminIssue.issueId] || null
     : null;
@@ -4237,26 +4466,74 @@ export default function Home() {
                       </button>
                     </div>
 
-                    <div className="mt-4 grid gap-4 2xl:grid-cols-2">
-                      <div>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <div className="mt-4 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 bg-slate-50 px-4 py-2 dark:border-slate-700 dark:bg-slate-800/60">
+                        <div>
+                          <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
+                            Report Difference View
+                          </p>
+                          <p className="text-[11px] text-slate-500">
+                            Red shows removed text, green shows added text.
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wide">
+                          <span className="rounded bg-red-100 px-2 py-1 text-red-700">
+                            Removed
+                          </span>
+                          <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-700">
+                            Added
+                          </span>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-2 border-b border-slate-200 dark:border-slate-700">
+                        <p className="border-r border-slate-200 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:border-slate-700 dark:text-slate-300">
                           AI Generated Report
                         </p>
-                        <textarea
-                          readOnly
-                          value={selectedAdminIssue.aiText}
-                          className="custom-scrollbar h-[32vh] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[37vh] xl:h-[41vh]"
-                        />
-                      </div>
-                      <div>
-                        <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wide text-slate-600 dark:text-slate-300">
                           Final Edited Report
                         </p>
-                        <textarea
-                          readOnly
-                          value={selectedAdminIssue.finalText}
-                          className="custom-scrollbar h-[32vh] w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 md:h-[37vh] xl:h-[41vh]"
-                        />
+                      </div>
+                      <div className="custom-scrollbar max-h-[44vh] overflow-auto">
+                        {selectedAdminIssueDiffRows.length === 0 ? (
+                          <div className="px-4 py-4 text-sm text-slate-500">
+                            No comparable report text available for diff.
+                          </div>
+                        ) : (
+                          selectedAdminIssueDiffRows.map((row) => (
+                            <div
+                              key={row.key}
+                              className="grid grid-cols-2 border-b border-slate-100 last:border-b-0 dark:border-slate-800"
+                            >
+                              <div
+                                className={`border-r border-slate-200 dark:border-slate-700 ${adminDiffCellTone(
+                                  row.kind,
+                                  "left"
+                                )}`}
+                              >
+                                <div className="flex items-start gap-2 px-3 py-1.5">
+                                  <span className="mt-0.5 w-8 shrink-0 text-right font-mono text-[10px] text-slate-400">
+                                    {row.leftLineNo ?? ""}
+                                  </span>
+                                  <div
+                                    className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-slate-700 dark:text-slate-200"
+                                    dangerouslySetInnerHTML={{ __html: row.leftHtml }}
+                                  />
+                                </div>
+                              </div>
+                              <div className={adminDiffCellTone(row.kind, "right")}>
+                                <div className="flex items-start gap-2 px-3 py-1.5">
+                                  <span className="mt-0.5 w-8 shrink-0 text-right font-mono text-[10px] text-slate-400">
+                                    {row.rightLineNo ?? ""}
+                                  </span>
+                                  <div
+                                    className="min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-slate-700 dark:text-slate-200"
+                                    dangerouslySetInnerHTML={{ __html: row.rightHtml }}
+                                  />
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
                     </div>
 
