@@ -15,8 +15,8 @@ const plexSans = IBM_Plex_Sans({
 });
 
 export const metadata: Metadata = {
-  title: "Radiology AI Typist (MVP)",
-  description: "Draft radiology findings from audio dictation."
+  title: "raddie-ai",
+  description: "Template-aware radiology dictation, drafting, and report review workspace."
 };
 
 export default function RootLayout({

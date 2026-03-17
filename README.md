@@ -1,4 +1,4 @@
-# Radiology AI Typist (MVP)
+# raddie-ai
 
 Draft radiology findings from a single audio dictation, with editable output and client-side export.
 

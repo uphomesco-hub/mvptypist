@@ -26,6 +26,7 @@ import {
 } from "firebase/firestore";
 import { getDownloadURL, ref as storageRef, uploadBytes } from "firebase/storage";
 import Editor from "@/components/Editor";
+import LandingHome from "@/components/LandingHome";
 import { templates } from "@/lib/templates";
 import { exportDocx } from "@/lib/exportDocx";
 import { exportPdf } from "@/lib/exportPdf";
@@ -87,6 +88,8 @@ const ISSUE_SUMMARY_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/admin-issue-summary`
   : "/api/admin-issue-summary";
 const ADMIN_EMAIL = "yashovrat56@gmail.com";
+const BRAND_NAME = "raddie-ai";
+const REPORT_EXPORT_BASENAME = "raddie-ai-report";
 const DEFAULT_PROFILE_IMAGE_URL =
   "https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg";
 const REPORT_HEADINGS = [
@@ -704,6 +707,7 @@ type DoctorProfile = {
   displayName: string;
   role: string;
   email: string;
+  phone: string;
   avatarUrl: string;
 };
 
@@ -1053,11 +1057,11 @@ export default function Home() {
   const [customTemplateProfileDraft, setCustomTemplateProfileDraft] = useState("");
   const [customTemplateProfileNotes, setCustomTemplateProfileNotes] = useState<string[]>([]);
   const [isAnalyzingTemplateProfile, setIsAnalyzingTemplateProfile] = useState(false);
-  const [authReady, setAuthReady] = useState(!isFirebaseClientConfigured);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [doctorProfile, setDoctorProfile] = useState<DoctorProfile | null>(null);
   const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
   const [authEmail, setAuthEmail] = useState("");
+  const [authPhone, setAuthPhone] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authName, setAuthName] = useState("");
   const [isAuthLoading, setIsAuthLoading] = useState(false);
@@ -1390,7 +1394,6 @@ export default function Home() {
 
   useEffect(() => {
     if (!firebaseClient) {
-      setAuthReady(true);
       return;
     }
     const unsubscribe = onAuthStateChanged(firebaseClient.auth, async (user) => {
@@ -1399,7 +1402,6 @@ export default function Home() {
         setDoctorProfile(null);
         setReports([]);
         setActiveReportId("");
-        setAuthReady(true);
         return;
       }
       try {
@@ -1416,6 +1418,7 @@ export default function Home() {
             String(existing?.displayName || "").trim() || fallbackName,
           role: String(existing?.role || "Radiologist"),
           email: String(existing?.email || user.email || ""),
+          phone: String(existing?.phone || ""),
           avatarUrl: String(existing?.avatarUrl || user.photoURL || "")
         };
         await setDoc(
@@ -1424,6 +1427,7 @@ export default function Home() {
             displayName: profile.displayName,
             role: profile.role,
             email: profile.email,
+            phone: profile.phone,
             avatarUrl: profile.avatarUrl,
             updatedAt: serverTimestamp(),
             createdAt: existing?.createdAt || serverTimestamp()
@@ -1433,8 +1437,6 @@ export default function Home() {
         setDoctorProfile(profile);
       } catch (profileError) {
         setError(firebaseErrorMessage(profileError));
-      } finally {
-        setAuthReady(true);
       }
     });
     return () => unsubscribe();
@@ -2236,6 +2238,19 @@ export default function Home() {
         if (displayName) {
           await updateProfile(created.user, { displayName });
         }
+        await setDoc(
+          doc(firebaseClient.db, `users/${created.user.uid}/profile/main`),
+          {
+            displayName,
+            role: "Radiologist",
+            email: created.user.email || authEmail.trim(),
+            phone: authPhone.trim(),
+            avatarUrl: created.user.photoURL || "",
+            updatedAt: serverTimestamp(),
+            createdAt: serverTimestamp()
+          },
+          { merge: true }
+        );
       } else {
         await signInWithEmailAndPassword(
           firebaseClient.auth,
@@ -2243,6 +2258,7 @@ export default function Home() {
           authPassword
         );
       }
+      setAuthPhone("");
       setAuthPassword("");
     } catch (authError) {
       setError(firebaseErrorMessage(authError));
@@ -2352,12 +2368,14 @@ export default function Home() {
 
       const nextRole = doctorProfile?.role || "Radiologist";
       const nextEmail = currentUser.email || doctorProfile?.email || "";
+      const nextPhone = doctorProfile?.phone || "";
       await setDoc(
         doc(firebaseClient.db, `users/${currentUser.uid}/profile/main`),
         {
           displayName: nextName,
           role: nextRole,
           email: nextEmail,
+          phone: nextPhone,
           avatarUrl,
           updatedAt: serverTimestamp()
         },
@@ -2371,6 +2389,7 @@ export default function Home() {
         displayName: nextName,
         role: nextRole,
         email: nextEmail,
+        phone: nextPhone,
         avatarUrl
       });
       if (profileAvatarObjectUrlRef.current) {
@@ -3109,90 +3128,24 @@ export default function Home() {
     </div>
   ) : null;
 
-  if (isFirebaseClientConfigured && !authReady) {
+  if (!currentUser) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-background-light dark:bg-background-dark">
-        <div className="rounded-xl border border-slate-200 bg-white px-6 py-4 text-sm font-semibold text-slate-700 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200">
-          Connecting to Firebase...
-        </div>
-      </div>
-    );
-  }
-
-  if (isFirebaseClientConfigured && !currentUser) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-background-light px-4 dark:bg-background-dark">
-        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-800 dark:bg-slate-900">
-          <div className="mb-5 text-center">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">altrixa.ai</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Sign in to access your templates, reports, and recordings.
-            </p>
-          </div>
-          <form className="space-y-3" onSubmit={handleAuthSubmit}>
-            {authMode === "signup" && (
-              <div>
-                <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
-                  Doctor Name
-                </label>
-                <input
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                  value={authName}
-                  onChange={(event) => setAuthName(event.target.value)}
-                  placeholder="Dr. Name"
-                />
-              </div>
-            )}
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
-                Email
-              </label>
-              <input
-                type="email"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                value={authEmail}
-                onChange={(event) => setAuthEmail(event.target.value)}
-                placeholder="doctor@hospital.com"
-                required
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold uppercase text-slate-500">
-                Password
-              </label>
-              <input
-                type="password"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-800 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100"
-                value={authPassword}
-                onChange={(event) => setAuthPassword(event.target.value)}
-                placeholder="••••••••"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              disabled={isAuthLoading}
-              className="w-full rounded-lg bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {isAuthLoading
-                ? "Please wait..."
-                : authMode === "signup"
-                  ? "Create Account"
-                  : "Sign In"}
-            </button>
-          </form>
-          <button
-            type="button"
-            className="mt-3 w-full text-sm font-medium text-primary hover:underline"
-            onClick={() => setAuthMode((current) => (current === "signin" ? "signup" : "signin"))}
-          >
-            {authMode === "signin"
-              ? "New doctor? Create account"
-              : "Already registered? Sign in"}
-          </button>
-        </div>
-        {errorToast}
-      </div>
+      <LandingHome
+        authMode={authMode}
+        authName={authName}
+        authEmail={authEmail}
+        authPhone={authPhone}
+        authPassword={authPassword}
+        brandName={BRAND_NAME}
+        errorToast={errorToast}
+        isAuthLoading={isAuthLoading}
+        onAuthEmailChange={setAuthEmail}
+        onAuthPhoneChange={setAuthPhone}
+        onAuthNameChange={setAuthName}
+        onAuthPasswordChange={setAuthPassword}
+        onAuthSubmit={handleAuthSubmit}
+        onSetAuthMode={setAuthMode}
+      />
     );
   }
 
@@ -3206,7 +3159,7 @@ export default function Home() {
             <div className="flex items-center gap-2 text-primary">
               <span className="material-icons-round text-3xl">analytics</span>
               {!isSidebarCollapsed && (
-                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                <span className="text-xl font-bold tracking-tight">{BRAND_NAME}</span>
               )}
             </div>
             <button
@@ -3356,7 +3309,7 @@ export default function Home() {
               )}
               <div className="flex items-center gap-2 rounded-full border border-green-100 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-600 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400">
                 <span className="material-icons-round text-sm">mic</span>
-                AI Voice Ready
+                {BRAND_NAME} ready
               </div>
               <button className="relative text-slate-500 transition-colors hover:text-primary">
                 <span className="material-icons-round">notifications</span>
@@ -3372,7 +3325,7 @@ export default function Home() {
                   Welcome back, {doctorName}
                 </h1>
                 <p className="mt-1 text-slate-500">
-                  Select a template card to begin. The exact Stitch workflow is now connected.
+                  Select a template card to begin and move from dictation to finalized report in one workspace.
                 </p>
               </div>
               <button
@@ -3563,7 +3516,7 @@ export default function Home() {
                       Custom Template Setup
                     </h2>
                     <p className="text-sm text-slate-500">
-                      Configure once here. altrixa.ai will fill mapped sections deterministically during generation.
+                      Configure once here. {BRAND_NAME} will fill mapped sections deterministically during generation.
                     </p>
                   </div>
                   <span className="rounded bg-primary/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-primary">
@@ -4016,7 +3969,7 @@ export default function Home() {
             <div className="flex items-center gap-2 text-primary">
               <span className="material-icons-round text-3xl">analytics</span>
               {!isSidebarCollapsed && (
-                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                <span className="text-xl font-bold tracking-tight">{BRAND_NAME}</span>
               )}
             </div>
             <button
@@ -4254,7 +4207,7 @@ export default function Home() {
             <div className="flex items-center gap-2 text-primary">
               <span className="material-icons-round text-3xl">analytics</span>
               {!isSidebarCollapsed && (
-                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                <span className="text-xl font-bold tracking-tight">{BRAND_NAME}</span>
               )}
             </div>
             <button
@@ -4648,7 +4601,7 @@ export default function Home() {
               <div className="flex items-center gap-2 text-primary">
                 <span className="material-icons-round text-3xl">analytics</span>
                 {!isSidebarCollapsed && (
-                  <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                  <span className="text-xl font-bold tracking-tight">{BRAND_NAME}</span>
                 )}
               </div>
               <button
@@ -5024,7 +4977,7 @@ export default function Home() {
               {inputLatencyMs ? `${inputLatencyMs} ms` : "N/A"}
             </span>
           </div>
-          <div>AI ENGINE: altrixa.ai | EN-US</div>
+          <div>{`AI ENGINE: ${BRAND_NAME} | EN-US`}</div>
         </footer>
 
         {errorToast}
@@ -5093,7 +5046,7 @@ export default function Home() {
             <div className="flex items-center gap-2 text-primary">
               <span className="material-icons-round text-3xl">analytics</span>
               {!isSidebarCollapsed && (
-                <span className="text-xl font-bold tracking-tight">altrixa.ai</span>
+                <span className="text-xl font-bold tracking-tight">{BRAND_NAME}</span>
               )}
             </div>
             <button
@@ -5258,7 +5211,7 @@ export default function Home() {
                   </button>
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
-                    onClick={() => exportDocx("radiology-report.docx", observations)}
+                    onClick={() => exportDocx(`${REPORT_EXPORT_BASENAME}.docx`, observations)}
                     disabled={!hasObservations}
                     title="Download DOCX"
                   >
@@ -5266,7 +5219,7 @@ export default function Home() {
                   </button>
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
-                    onClick={() => exportPdf("radiology-report.pdf", observations)}
+                    onClick={() => exportPdf(`${REPORT_EXPORT_BASENAME}.pdf`, observations)}
                     disabled={!hasObservations}
                     title="Download PDF"
                   >
@@ -5314,7 +5267,7 @@ export default function Home() {
               <div className="flex gap-2">
                 <button
                   className="flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold transition-all hover:bg-white dark:border-slate-700 dark:hover:bg-slate-800"
-                  onClick={() => exportPdf("radiology-report.pdf", observations)}
+                  onClick={() => exportPdf(`${REPORT_EXPORT_BASENAME}.pdf`, observations)}
                   disabled={!hasObservations}
                 >
                   <span className="material-icons-round text-lg text-slate-500">picture_as_pdf</span>
@@ -5322,7 +5275,7 @@ export default function Home() {
                 </button>
                 <button
                   className="flex items-center gap-2 rounded-lg border border-slate-200 px-4 py-2 text-sm font-semibold transition-all hover:bg-white dark:border-slate-700 dark:hover:bg-slate-800"
-                  onClick={() => exportDocx("radiology-report.docx", observations)}
+                  onClick={() => exportDocx(`${REPORT_EXPORT_BASENAME}.docx`, observations)}
                   disabled={!hasObservations}
                 >
                   <span className="material-icons-round text-lg text-slate-500">description</span>
@@ -5447,14 +5400,14 @@ export default function Home() {
           <div className="flex items-center gap-2 overflow-x-auto">
             <button
               className="min-w-[4.5rem] rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200"
-              onClick={() => exportPdf("radiology-report.pdf", observations)}
+              onClick={() => exportPdf(`${REPORT_EXPORT_BASENAME}.pdf`, observations)}
               disabled={!hasObservations}
             >
               PDF
             </button>
             <button
               className="min-w-[4.5rem] rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-700 dark:border-slate-700 dark:text-slate-200"
-              onClick={() => exportDocx("radiology-report.docx", observations)}
+              onClick={() => exportDocx(`${REPORT_EXPORT_BASENAME}.docx`, observations)}
               disabled={!hasObservations}
             >
               DOCX
