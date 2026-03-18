@@ -188,6 +188,35 @@ body {
   animation-delay: 0.36s;
 }
 
+.hero-section-shell {
+  --hero-blob-x: 72%;
+  --hero-blob-y: 34%;
+  --hero-blob-opacity: 0;
+  position: relative;
+  isolation: isolate;
+}
+
+.hero-section-cursor-blob {
+  position: absolute;
+  left: var(--hero-blob-x);
+  top: var(--hero-blob-y);
+  width: 13rem;
+  height: 13rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(125, 211, 252, 0.34), rgba(19, 91, 236, 0.16) 42%, transparent 74%);
+  filter: blur(28px);
+  opacity: var(--hero-blob-opacity);
+  transform: translate(-50%, -50%);
+  transition: opacity 180ms ease;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.hero-section-shell > *:not(.hero-section-cursor-blob) {
+  position: relative;
+  z-index: 1;
+}
+
 .hero-pipeline-shell {
   position: relative;
   overflow: visible;
@@ -1301,7 +1330,14 @@ body {
   }
 }
 
+@media (hover: none), (pointer: coarse) {
+  .hero-section-cursor-blob {
+    display: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .hero-section-cursor-blob,
   .workflow-preview-card,
   .workflow-preview-card::before,
   .workflow-dashboard-chip,
@@ -1342,5 +1378,9 @@ body {
   .workflow-report-impression {
     opacity: 1;
     transform: none;
+  }
+
+  .hero-section-cursor-blob {
+    display: none;
   }
 }

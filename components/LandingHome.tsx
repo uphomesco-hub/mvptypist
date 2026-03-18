@@ -602,6 +602,19 @@ export default function LandingHome({
   const [showFloatingMobileCta, setShowFloatingMobileCta] = useState(false);
   const heroSectionRef = useRef<HTMLElement | null>(null);
 
+  const updateHeroBlobPosition = (clientX: number, clientY: number, opacity: string) => {
+    const heroElement = heroSectionRef.current;
+    if (!heroElement) return;
+
+    const bounds = heroElement.getBoundingClientRect();
+    const x = ((clientX - bounds.left) / bounds.width) * 100;
+    const y = ((clientY - bounds.top) / bounds.height) * 100;
+
+    heroElement.style.setProperty("--hero-blob-x", `${Math.max(6, Math.min(94, x))}%`);
+    heroElement.style.setProperty("--hero-blob-y", `${Math.max(10, Math.min(90, y))}%`);
+    heroElement.style.setProperty("--hero-blob-opacity", opacity);
+  };
+
   useEffect(() => {
     if (!isAuthSheetOpen) return;
 
@@ -704,8 +717,14 @@ export default function LandingHome({
       <main id="top" className="relative z-10">
         <section
           ref={heroSectionRef}
-          className="mx-auto max-w-7xl px-4 pb-14 pt-6 sm:px-6 sm:pt-10 lg:px-8 lg:pb-24 lg:pt-16"
+          className="hero-section-shell mx-auto max-w-7xl px-4 pb-14 pt-6 sm:px-6 sm:pt-10 lg:px-8 lg:pb-24 lg:pt-16"
+          onPointerEnter={(event) => updateHeroBlobPosition(event.clientX, event.clientY, "0.82")}
+          onPointerMove={(event) => updateHeroBlobPosition(event.clientX, event.clientY, "0.82")}
+          onPointerLeave={() => {
+            heroSectionRef.current?.style.setProperty("--hero-blob-opacity", "0");
+          }}
         >
+          <div className="hero-section-cursor-blob" aria-hidden="true" />
           <div className="mb-4 flex lg:hidden">
             <div className="inline-flex items-center gap-2 rounded-full border border-primary/15 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-primary shadow-sm backdrop-blur">
               <span className="h-2 w-2 rounded-full bg-primary" />
