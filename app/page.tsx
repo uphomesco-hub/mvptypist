@@ -88,8 +88,8 @@ const ISSUE_SUMMARY_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/admin-issue-summary`
   : "/api/admin-issue-summary";
 const ADMIN_EMAIL = "yashovrat56@gmail.com";
-const BRAND_NAME = "raddie-ai";
-const REPORT_EXPORT_BASENAME = "raddie-ai-report";
+const BRAND_NAME = "raddie.ai";
+const REPORT_EXPORT_BASENAME = "raddie.ai-report";
 const DEFAULT_PROFILE_IMAGE_URL =
   "https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg";
 const REPORT_HEADINGS = [

@@ -93,7 +93,7 @@ const featureSections = [
   {
     eyebrow: "Why it feels faster",
     title: "Templates remove repetitive formatting before the first word is dictated",
-    body: "raddie-ai is designed around structured radiology reporting, so doctors are not rebuilding the same layout, headings, and impression flow on every case.",
+    body: "raddie.ai is designed around structured radiology reporting, so doctors are not rebuilding the same layout, headings, and impression flow on every case.",
     bullets: [
       "Fast template selection for recurring ultrasound and routine studies",
       "Custom profile setup for practice-specific formats and preferences",
@@ -801,7 +801,7 @@ export default function LandingHome({
               How it works
             </p>
             <h2 className="mt-3 text-4xl font-bold tracking-tight text-slate-950">
-              Why reporting feels faster inside raddie-ai
+              Why reporting feels faster inside raddie.ai
             </h2>
             <p className="mt-4 text-base leading-8 text-slate-600">
               The speed comes from removing avoidable friction: less manual formatting, fewer
