@@ -599,7 +599,9 @@ export default function LandingHome({
   onSetAuthMode
 }: LandingHomeProps) {
   const [isAuthSheetOpen, setIsAuthSheetOpen] = useState(false);
+  const [showFloatingMobileCta, setShowFloatingMobileCta] = useState(false);
   const heroSectionRef = useRef<HTMLElement | null>(null);
+  const heroActionsRef = useRef<HTMLDivElement | null>(null);
 
   const updateHeroBlobPosition = (clientX: number, clientY: number, opacity: string) => {
     const heroElement = heroSectionRef.current;
@@ -630,6 +632,24 @@ export default function LandingHome({
       window.removeEventListener("keydown", handleEscape);
     };
   }, [isAuthSheetOpen]);
+
+  useEffect(() => {
+    const heroActionsElement = heroActionsRef.current;
+    if (!heroActionsElement || typeof IntersectionObserver === "undefined") return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setShowFloatingMobileCta(!entry.isIntersecting);
+      },
+      {
+        threshold: 0.1,
+        rootMargin: "0px 0px -12% 0px"
+      }
+    );
+
+    observer.observe(heroActionsElement);
+    return () => observer.disconnect();
+  }, []);
 
   const openAuthSheet = (mode: AuthMode) => {
     onSetAuthMode(mode);
@@ -733,7 +753,7 @@ export default function LandingHome({
                 more time reviewing, signing off, and sending reports.
               </p>
 
-              <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+              <div ref={heroActionsRef} className="mt-8 flex flex-col gap-3 sm:flex-row">
                 <button
                   type="button"
                   className="inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-6 py-3.5 text-sm font-semibold text-white shadow-xl shadow-primary/20 transition hover:bg-primary/90"
@@ -1007,15 +1027,17 @@ export default function LandingHome({
         </div>
       </footer>
 
-      <button
-        type="button"
-        className="fixed left-4 right-4 z-30 inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-5 py-3.5 text-sm font-semibold text-white shadow-2xl shadow-primary/30 transition hover:bg-primary/90 sm:hidden"
-        style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
-        onClick={() => openAuthSheet("signup")}
-      >
-        <ActionIcon icon="play" />
-        Try for free
-      </button>
+      {showFloatingMobileCta && (
+        <button
+          type="button"
+          className="fixed left-4 right-4 z-30 inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-5 py-3.5 text-sm font-semibold text-white shadow-2xl shadow-primary/30 transition hover:bg-primary/90 sm:hidden"
+          style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+          onClick={() => openAuthSheet("signup")}
+        >
+          <ActionIcon icon="play" />
+          Try for free
+        </button>
+      )}
 
       {isAuthSheetOpen && (
         <div className="fixed inset-0 z-50">
