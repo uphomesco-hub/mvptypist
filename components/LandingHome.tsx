@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   useEffect,
   useRef,
@@ -454,6 +455,26 @@ function WorkflowPreview({ preview }: { preview: (typeof workflowSteps)[number][
   return <WorkflowReportPreview />;
 }
 
+function BrandMark({
+  className,
+  sizes
+}: {
+  className: string;
+  sizes: string;
+}) {
+  return (
+    <div className={`relative overflow-hidden bg-white ${className}`}>
+      <Image
+        src="/raddie.png"
+        alt="raddie.ai logo"
+        fill
+        sizes={sizes}
+        className="object-cover"
+      />
+    </div>
+  );
+}
+
 function RolloutIcon({ icon }: { icon: (typeof partnerBadges)[number]["icon"] }) {
   const common = "h-5 w-5 stroke-[1.8]";
 
@@ -674,9 +695,10 @@ export default function LandingHome({
       <header className="sticky top-0 z-40 border-b border-slate-200/80 bg-white/85 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-4 sm:px-6 lg:px-8">
           <a href="#top" className="flex items-center gap-3 text-slate-950 no-underline">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-950 text-lg font-bold text-white shadow-lg shadow-slate-900/10">
-              R
-            </div>
+            <BrandMark
+              className="h-11 w-11 rounded-2xl shadow-lg shadow-slate-900/10"
+              sizes="44px"
+            />
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-primary">
                 Radiology workspace
@@ -1018,9 +1040,7 @@ export default function LandingHome({
       <footer className="border-t border-slate-200 bg-white/90">
         <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-6 text-sm text-slate-500 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
           <div className="flex items-center gap-3 text-slate-950">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-950 text-sm font-bold text-white">
-              R
-            </div>
+            <BrandMark className="h-10 w-10 rounded-2xl shadow-sm shadow-slate-900/10" sizes="40px" />
             <span className="font-semibold">{brandName}</span>
           </div>
           <p>Voice-first radiology drafting, review, and export from a single workspace.</p>
@@ -1053,9 +1073,10 @@ export default function LandingHome({
             <div className="grid lg:grid-cols-[0.9fr_1.1fr]">
               <div className="hidden rounded-l-[2rem] bg-slate-950 p-8 text-white lg:flex lg:flex-col lg:justify-between">
                 <div>
-                  <div className="flex h-14 w-14 items-center justify-center rounded-3xl bg-white text-xl font-bold text-slate-950">
-                    R
-                  </div>
+                  <BrandMark
+                    className="h-14 w-14 rounded-3xl shadow-lg shadow-slate-950/20"
+                    sizes="56px"
+                  />
                   <p className="mt-5 text-xs font-semibold uppercase tracking-[0.28em] text-blue-200">
                     Radiology workspace
                   </p>

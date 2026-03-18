@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://raddie.ai";
+
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
   variable: "--font-display",
@@ -15,8 +17,43 @@ const plexSans = IBM_Plex_Sans({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL(siteUrl),
+  applicationName: "raddie.ai",
+  alternates: {
+    canonical: "/"
+  },
   title: "raddie.ai",
-  description: "Template-aware radiology dictation, drafting, and report review workspace."
+  description: "Template-aware radiology dictation, drafting, and report review workspace.",
+  icons: {
+    icon: [
+      { url: "/favicon.ico", sizes: "any" },
+      { url: "/icon-192.png", type: "image/png", sizes: "192x192" },
+      { url: "/icon-512.png", type: "image/png", sizes: "512x512" }
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180" }],
+    shortcut: ["/favicon.ico"]
+  },
+  openGraph: {
+    type: "website",
+    url: siteUrl,
+    siteName: "raddie.ai",
+    title: "raddie.ai",
+    description: "Template-aware radiology dictation, drafting, and report review workspace.",
+    images: [
+      {
+        url: "/raddie.png",
+        width: 1024,
+        height: 1024,
+        alt: "raddie.ai logo"
+      }
+    ]
+  },
+  twitter: {
+    card: "summary",
+    title: "raddie.ai",
+    description: "Template-aware radiology dictation, drafting, and report review workspace.",
+    images: ["/raddie.png"]
+  }
 };
 
 export default function RootLayout({
