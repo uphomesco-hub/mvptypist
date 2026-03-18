@@ -22,6 +22,1025 @@ body {
   color: #0f172a;
 }
 
+.workflow-preview-shell {
+  position: relative;
+  isolation: isolate;
+}
+
+.workflow-preview-card {
+  position: relative;
+  animation: workflowPreviewFloat 6.4s ease-in-out infinite;
+}
+
+.workflow-preview-card::before {
+  content: "";
+  position: absolute;
+  inset: -20% auto auto -10%;
+  width: 8rem;
+  height: 8rem;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(19, 91, 236, 0.12), transparent 70%);
+  opacity: 0.75;
+  filter: blur(8px);
+  pointer-events: none;
+  z-index: 0;
+  animation: workflowGlowDrift 7s ease-in-out infinite;
+}
+
+.workflow-preview-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.workflow-dashboard-chip {
+  animation: workflowChipPulse 2.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-row {
+  border-color: rgb(226 232 240);
+  background: rgb(248 250 252);
+  animation: workflowCardRowPulse 5.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-row-active {
+  box-shadow: 0 0 0 1px rgba(19, 91, 236, 0.06);
+}
+
+.workflow-dashboard-row-select-1 {
+  animation: workflowDashboardSelect1 5.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-row-select-2 {
+  animation: workflowDashboardSelect2 5.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-row-select-3 {
+  animation: workflowDashboardSelect3 5.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-panel {
+  animation: workflowPanelLift 5.8s ease-in-out infinite;
+}
+
+.workflow-dashboard-panel-delay {
+  animation-delay: 0.45s;
+}
+
+.workflow-recording-orb {
+  position: relative;
+  animation: workflowRecordingDotPulse 2.3s ease-in-out infinite;
+}
+
+.workflow-recording-orb::after {
+  content: "";
+  position: absolute;
+  inset: -0.5rem;
+  border-radius: 999px;
+  border: 1px solid rgba(19, 91, 236, 0.24);
+  animation: workflowRecordingRing 2.3s ease-out infinite;
+}
+
+.workflow-recording-clock {
+  animation: workflowClockBlink 2.3s ease-in-out infinite;
+}
+
+.workflow-recording-wave-bar {
+  transform-origin: center bottom;
+  animation: workflowWaveBarPulse 1.15s ease-in-out infinite;
+}
+
+.workflow-recording-check-row {
+  animation: workflowCheckRowGlow 5.8s ease-in-out infinite;
+}
+
+.workflow-recording-check-dot {
+  animation: workflowCheckDotPulse 1.9s ease-in-out infinite;
+}
+
+.workflow-report-tab {
+  color: rgb(100 116 139);
+  transition: color 180ms ease;
+}
+
+.workflow-report-tab-1 {
+  animation: workflowReportTab1 5.8s ease-in-out infinite;
+}
+
+.workflow-report-tab-2 {
+  animation: workflowReportTab2 5.8s ease-in-out infinite;
+}
+
+.workflow-report-tab-3 {
+  animation: workflowReportTab3 5.8s ease-in-out infinite;
+}
+
+.workflow-report-editor {
+  position: relative;
+  overflow: hidden;
+}
+
+.workflow-report-editor::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    100deg,
+    rgba(255, 255, 255, 0) 28%,
+    rgba(19, 91, 236, 0.08) 50%,
+    rgba(255, 255, 255, 0) 72%
+  );
+  transform: translate3d(-120%, 0, 0);
+  animation: workflowEditorSheen 5.8s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.workflow-report-panel {
+  position: absolute;
+  inset: 1rem;
+  opacity: 0;
+  transform: translate3d(0, 10px, 0);
+  pointer-events: none;
+}
+
+.workflow-report-panel-1 {
+  animation: workflowReportPanel1 5.8s ease-in-out infinite;
+}
+
+.workflow-report-panel-2 {
+  animation: workflowReportPanel2 5.8s ease-in-out infinite;
+}
+
+.workflow-report-panel-3 {
+  animation: workflowReportPanel3 5.8s ease-in-out infinite;
+}
+
+.workflow-report-line {
+  opacity: 0;
+  transform: translate3d(0, 8px, 0);
+  animation: workflowReportFindingsReveal 5.8s ease-in-out infinite;
+}
+
+.workflow-report-line:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.workflow-report-line:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+.hero-pipeline-shell {
+  position: relative;
+  overflow: visible;
+  background: transparent;
+  padding: 0;
+  isolation: isolate;
+}
+
+.hero-pipeline-shell::before {
+  content: none;
+}
+
+.hero-pipeline-glow {
+  position: absolute;
+  border-radius: 999px;
+  filter: blur(54px);
+  opacity: 0.75;
+  animation: heroGlowDrift 7.2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.hero-pipeline-glow-primary {
+  top: -4rem;
+  left: -2rem;
+  width: 12rem;
+  height: 12rem;
+  background: rgba(19, 91, 236, 0.16);
+}
+
+.hero-pipeline-glow-secondary {
+  right: -3rem;
+  bottom: -4rem;
+  width: 13rem;
+  height: 13rem;
+  background: rgba(56, 189, 248, 0.14);
+  animation-delay: -3.2s;
+}
+
+.hero-pipeline-scene {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(2rem, 0.12fr) minmax(16rem, 1.18fr);
+  align-items: center;
+  justify-items: center;
+  column-gap: clamp(0.6rem, 1.8vw, 1.35rem);
+  min-height: 24rem;
+}
+
+.hero-pipeline-stream {
+  position: relative;
+  width: min(100%, 24rem);
+  height: 12rem;
+}
+
+.hero-pipeline-stream::before,
+.hero-pipeline-report::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(19, 91, 236, 0), rgba(19, 91, 236, 0.22), rgba(19, 91, 236, 0));
+}
+
+.hero-pipeline-stream::before {
+  left: 0;
+  right: 0;
+}
+
+.hero-pipeline-report::before {
+  left: -1rem;
+  right: calc(100% - 1.25rem);
+}
+
+.hero-pipeline-wave-ribbon {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 0.28rem;
+  height: 5rem;
+  transform: translate(-50%, -50%);
+}
+
+.hero-pipeline-wave-ribbon span {
+  width: 0.42rem;
+  border-radius: 999px;
+  background: linear-gradient(180deg, #7dd3fc, #135bec);
+  transform-origin: center bottom;
+  opacity: 0.84;
+  animation: heroWavePulse 1.2s ease-in-out infinite;
+}
+
+.hero-pipeline-filter {
+  position: relative;
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  gap: 0.6rem;
+  height: 12rem;
+}
+
+.hero-pipeline-filter span {
+  width: 0.24rem;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(180deg, rgba(19, 91, 236, 0.28), #135bec, rgba(19, 91, 236, 0.22));
+  box-shadow: 0 0 0 1px rgba(19, 91, 236, 0.08), 0 0 18px rgba(19, 91, 236, 0.12);
+  animation: heroFilterGlow 2.4s ease-in-out infinite;
+}
+
+.hero-pipeline-filter span:last-child {
+  animation-delay: -1.2s;
+}
+
+.hero-pipeline-token {
+  --token-start: calc(-50% - 58px);
+  --token-mid: calc(-50% - 8px);
+  --token-late: calc(-50% + 20px);
+  --token-end: calc(-50% + 64px);
+  position: absolute;
+  left: 50%;
+  color: rgba(15, 23, 42, 0.86);
+  font-size: 0.8rem;
+  font-weight: 600;
+  font-style: italic;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  text-align: center;
+  transform: translate3d(var(--token-start), 0, 0) scale(0.82);
+  opacity: 0;
+  filter: blur(6px);
+  animation: heroTokenDrift 7.2s ease-in-out infinite;
+  animation-delay: var(--delay);
+}
+
+.hero-pipeline-report {
+  position: relative;
+  display: flex;
+  width: min(100%, 20rem);
+  justify-content: center;
+}
+
+.hero-pipeline-report-sheet {
+  position: relative;
+  min-height: 13.6rem;
+  border-radius: 1.7rem 1.5rem 1.85rem 1.5rem;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(248, 250, 252, 0.86));
+  padding: 1.2rem 1.15rem;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+}
+
+.hero-pipeline-report-sheet::before {
+  content: "";
+  position: absolute;
+  top: 0.95rem;
+  right: 0.95rem;
+  width: 1.15rem;
+  height: 1.15rem;
+  border-top: 1px solid rgba(15, 23, 42, 0.14);
+  border-right: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 0 0.4rem 0 0;
+  transform: rotate(3deg);
+}
+
+.hero-pipeline-report-content {
+  width: 100%;
+  padding-top: 24px;
+}
+
+.hero-pipeline-report-row {
+  display: grid;
+  margin-top: 0.7rem;
+  overflow: hidden;
+}
+
+.hero-pipeline-report-row:first-child {
+  margin-top: 0;
+}
+
+.hero-pipeline-report-ghost,
+.hero-pipeline-report-type {
+  grid-area: 1 / 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.hero-pipeline-report-ghost {
+  visibility: hidden;
+}
+
+.hero-pipeline-report-type {
+  display: inline-block;
+  justify-self: start;
+  width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  color: #0f172a;
+  border-right: 1.5px solid transparent;
+}
+
+.hero-pipeline-report-type-1 {
+  animation: heroTypeLine1 7.2s steps(30, end) infinite;
+}
+
+.hero-pipeline-report-type-2 {
+  animation: heroTypeLine2 7.2s steps(30, end) infinite;
+}
+
+.hero-pipeline-report-type-3 {
+  animation: heroTypeLine3 7.2s steps(30, end) infinite;
+}
+
+.hero-pipeline-report-type-4 {
+  animation: heroTypeLine4 7.2s steps(30, end) infinite;
+}
+
+.hero-pipeline-report-type-5 {
+  animation: heroTypeLine5 7.2s steps(30, end) infinite;
+}
+
+.hero-pipeline-report-type-6 {
+  animation: heroTypeLine6 7.2s steps(30, end) infinite;
+}
+
+@keyframes heroGlowDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  50% {
+    transform: translate3d(0.6rem, -0.7rem, 0) scale(1.08);
+  }
+}
+
+@keyframes workflowPreviewFloat {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(0, -6px, 0);
+  }
+}
+
+@keyframes workflowGlowDrift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) scale(1);
+    opacity: 0.62;
+  }
+
+  50% {
+    transform: translate3d(0.75rem, -0.45rem, 0) scale(1.08);
+    opacity: 0.9;
+  }
+}
+
+@keyframes workflowChipPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    background: rgb(241 245 249);
+  }
+
+  50% {
+    transform: scale(1.03);
+    background: rgba(19, 91, 236, 0.08);
+  }
+}
+
+@keyframes workflowCardRowPulse {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: none;
+  }
+
+  18%,
+  30% {
+    transform: translate3d(0, -2px, 0);
+    box-shadow: 0 12px 24px rgba(15, 23, 42, 0.05);
+  }
+}
+
+@keyframes workflowDashboardSelect1 {
+  0%,
+  28%,
+  100% {
+    background: rgba(19, 91, 236, 0.08);
+    border-color: rgba(19, 91, 236, 0.22);
+  }
+
+  34%,
+  94% {
+    background: rgb(248 250 252);
+    border-color: rgb(226 232 240);
+  }
+}
+
+@keyframes workflowDashboardSelect2 {
+  0%,
+  28% {
+    background: rgb(248 250 252);
+    border-color: rgb(226 232 240);
+  }
+
+  34%,
+  61% {
+    background: rgba(19, 91, 236, 0.08);
+    border-color: rgba(19, 91, 236, 0.22);
+  }
+
+  67%,
+  100% {
+    background: rgb(248 250 252);
+    border-color: rgb(226 232 240);
+  }
+}
+
+@keyframes workflowDashboardSelect3 {
+  0%,
+  61% {
+    background: rgb(248 250 252);
+    border-color: rgb(226 232 240);
+  }
+
+  67%,
+  94% {
+    background: rgba(19, 91, 236, 0.08);
+    border-color: rgba(19, 91, 236, 0.22);
+  }
+
+  100% {
+    background: rgb(248 250 252);
+    border-color: rgb(226 232 240);
+  }
+}
+
+@keyframes workflowPanelLift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  25%,
+  45% {
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@keyframes workflowRecordingDotPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@keyframes workflowRecordingRing {
+  0% {
+    transform: scale(0.84);
+    opacity: 0;
+  }
+
+  25% {
+    opacity: 0.5;
+  }
+
+  100% {
+    transform: scale(1.28);
+    opacity: 0;
+  }
+}
+
+@keyframes workflowClockBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.72;
+  }
+}
+
+@keyframes workflowWaveBarPulse {
+  0%,
+  100% {
+    transform: scaleY(0.72);
+    opacity: 0.65;
+  }
+
+  50% {
+    transform: scaleY(1.16);
+    opacity: 1;
+  }
+}
+
+@keyframes workflowCheckRowGlow {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    box-shadow: none;
+  }
+
+  20%,
+  34% {
+    transform: translate3d(0, -1px, 0);
+    box-shadow: 0 10px 18px rgba(15, 23, 42, 0.06);
+  }
+}
+
+@keyframes workflowCheckDotPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+
+  50% {
+    transform: scale(1.18);
+    opacity: 0.82;
+  }
+}
+
+@keyframes workflowEditorSheen {
+  0%,
+  18% {
+    transform: translate3d(-120%, 0, 0);
+    opacity: 0;
+  }
+
+  28%,
+  62% {
+    transform: translate3d(120%, 0, 0);
+    opacity: 1;
+  }
+
+  100% {
+    transform: translate3d(120%, 0, 0);
+    opacity: 0;
+  }
+}
+
+@keyframes workflowReportTab1 {
+  0%,
+  28%,
+  100% {
+    transform: translate3d(0, -1px, 0);
+    background: white;
+    color: #020617;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+
+  34%,
+  94% {
+    transform: translate3d(0, 0, 0);
+    background: transparent;
+    color: rgb(100 116 139);
+    box-shadow: none;
+  }
+}
+
+@keyframes workflowReportTab2 {
+  0%,
+  28% {
+    transform: translate3d(0, 0, 0);
+    background: transparent;
+    color: rgb(100 116 139);
+    box-shadow: none;
+  }
+
+  34%,
+  61% {
+    transform: translate3d(0, -1px, 0);
+    background: white;
+    color: #020617;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+
+  67%,
+  100% {
+    transform: translate3d(0, 0, 0);
+    background: transparent;
+    color: rgb(100 116 139);
+    box-shadow: none;
+  }
+}
+
+@keyframes workflowReportTab3 {
+  0%,
+  61% {
+    transform: translate3d(0, 0, 0);
+    background: transparent;
+    color: rgb(100 116 139);
+    box-shadow: none;
+  }
+
+  67%,
+  94% {
+    transform: translate3d(0, -1px, 0);
+    background: white;
+    color: #020617;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  }
+
+  100% {
+    transform: translate3d(0, 0, 0);
+    background: transparent;
+    color: rgb(100 116 139);
+    box-shadow: none;
+  }
+}
+
+@keyframes workflowReportPanel1 {
+  0%,
+  28%,
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+
+  34%,
+  94% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+}
+
+@keyframes workflowReportPanel2 {
+  0%,
+  28% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+
+  34%,
+  61% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+
+  67%,
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+}
+
+@keyframes workflowReportPanel3 {
+  0%,
+  61% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+
+  67%,
+  94% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+}
+
+@keyframes workflowReportFindingsReveal {
+  0%,
+  8% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+
+  14%,
+  28% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+
+  34%,
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 8px, 0);
+  }
+}
+
+@keyframes heroPulseRing {
+  0%,
+  100% {
+    transform: scale(0.92);
+    opacity: 0.18;
+  }
+
+  45% {
+    transform: scale(1.02);
+    opacity: 0.34;
+  }
+
+  70% {
+    transform: scale(1.06);
+    opacity: 0.1;
+  }
+}
+
+@keyframes heroWavePulse {
+  0%,
+  100% {
+    transform: scaleY(0.72);
+    opacity: 0.45;
+  }
+
+  50% {
+    transform: scaleY(1.22);
+    opacity: 1;
+  }
+}
+
+@keyframes heroFilterGlow {
+  0%,
+  100% {
+    transform: scaleY(0.92);
+    opacity: 0.65;
+  }
+
+  50% {
+    transform: scaleY(1.08);
+    opacity: 1;
+  }
+}
+
+@keyframes heroTokenDrift {
+  0% {
+    transform: translate3d(var(--token-start), 0, 0) scale(0.82);
+    opacity: 0;
+    filter: blur(6px);
+  }
+
+  12% {
+    opacity: 0.96;
+    filter: blur(0);
+  }
+
+  48% {
+    transform: translate3d(var(--token-mid), var(--drift), 0) scale(1);
+    opacity: 0.98;
+    filter: blur(0);
+  }
+
+  58% {
+    transform: translate3d(var(--token-late), 0, 0) scale(0.9);
+    opacity: 0.94;
+  }
+
+  100% {
+    transform: translate3d(var(--token-end), 0, 0) scale(0.92);
+    opacity: 0;
+    filter: blur(4px);
+  }
+}
+
+@keyframes heroCursorBlink {
+  0%,
+  49% {
+    border-right-color: #135bec;
+  }
+
+  50%,
+  100% {
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine1 {
+  0%,
+  8% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  12% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  24%,
+  88% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  94%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine2 {
+  0%,
+  24% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  28% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  40%,
+  88% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  94%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine3 {
+  0%,
+  40% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  44% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  56%,
+  88% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  94%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine4 {
+  0%,
+  52% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  56% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  66%,
+  88% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  94%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine5 {
+  0%,
+  66% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  70% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  78%,
+  94% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  96%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
+@keyframes heroTypeLine6 {
+  0%,
+  78% {
+    width: 0ch;
+    opacity: 0;
+    border-right-color: transparent;
+  }
+
+  82% {
+    opacity: 1;
+    border-right-color: #135bec;
+  }
+
+  90%,
+  94% {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  96%,
+  100% {
+    width: var(--line-width);
+    opacity: 0;
+    border-right-color: transparent;
+  }
+}
+
 .sidebar-item-active {
   background-color: rgba(19, 91, 236, 0.1);
   border-right: 3px solid #135bec;
@@ -173,6 +1192,36 @@ body {
 }
 
 @media (max-width: 1024px) {
+  .hero-pipeline-shell {
+    padding: 0;
+  }
+
+  .hero-pipeline-scene {
+    grid-template-columns: 1fr;
+    row-gap: 0.85rem;
+    min-height: auto;
+  }
+
+  .hero-pipeline-stream,
+  .hero-pipeline-filter,
+  .hero-pipeline-report {
+    width: 100%;
+    max-width: 32rem;
+    margin: 0 auto;
+  }
+
+  .hero-pipeline-stream {
+    height: 8.8rem;
+  }
+
+  .hero-pipeline-filter {
+    height: 5rem;
+  }
+
+  .hero-pipeline-report::before {
+    display: none;
+  }
+
   .floating-error {
     left: 1rem;
     right: 1rem;
@@ -181,6 +1230,32 @@ body {
 }
 
 @media (max-width: 768px) {
+  .hero-pipeline-shell {
+    padding: 0;
+  }
+
+  .hero-pipeline-stream {
+    height: 8.2rem;
+  }
+
+  .hero-pipeline-token {
+    --token-start: calc(-50% - 46px);
+    --token-mid: calc(-50% - 6px);
+    --token-late: calc(-50% + 14px);
+    --token-end: calc(-50% + 50px);
+    font-size: 0.62rem;
+  }
+
+  .hero-pipeline-report-ghost,
+  .hero-pipeline-report-type {
+    font-size: 0.68rem;
+  }
+
+  .hero-pipeline-report-sheet {
+    min-height: 12rem;
+    padding: 1.1rem 0.95rem;
+  }
+
   .report-editor {
     min-height: 60vh !important;
     padding: 1rem !important;
@@ -217,5 +1292,55 @@ body {
     height: auto;
     max-height: none;
     padding: 0.75rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .hero-pipeline-report {
+    min-height: 20rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workflow-preview-card,
+  .workflow-preview-card::before,
+  .workflow-dashboard-chip,
+  .workflow-dashboard-row,
+  .workflow-dashboard-panel,
+  .workflow-recording-orb,
+  .workflow-recording-orb::after,
+  .workflow-recording-clock,
+  .workflow-recording-wave-bar,
+  .workflow-recording-check-row,
+  .workflow-recording-check-dot,
+  .workflow-report-tab-active,
+  .workflow-report-editor::after,
+  .workflow-report-line,
+  .workflow-report-impression,
+  .hero-pipeline-glow,
+  .hero-pipeline-wave-ribbon span,
+  .hero-pipeline-filter span,
+  .hero-pipeline-token,
+  .hero-pipeline-report-type {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .hero-pipeline-token {
+    opacity: 0.96;
+    filter: none;
+    transform: translate3d(var(--reduce-x), var(--reduce-y), 0) scale(var(--reduce-scale));
+  }
+
+  .hero-pipeline-report-type {
+    width: var(--line-width);
+    opacity: 1;
+    border-right-color: transparent;
+  }
+
+  .workflow-report-line,
+  .workflow-report-impression {
+    opacity: 1;
+    transform: none;
   }
 }

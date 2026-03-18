@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type ReactNode
+} from "react";
 
 type AuthMode = "signin" | "signup";
 
@@ -154,162 +161,121 @@ const pricingPlans = [
   }
 ];
 
-function PreviewBrowser() {
+type HeroAnimationStyle = CSSProperties & {
+  "--delay"?: string;
+  "--drift"?: string;
+  "--line-width"?: string;
+  "--reduce-x"?: string;
+  "--reduce-y"?: string;
+  "--reduce-scale"?: string;
+};
+
+const heroWaveBars = [18, 30, 22, 38, 26, 42, 28, 36, 22];
+
+const heroFlowTokens = [
+  {
+    text: "normal liver",
+    top: "18%",
+    delay: "0.15s",
+    drift: "-12px",
+    reduceX: "18%",
+    reduceY: "-4px",
+    reduceScale: "0.95"
+  },
+  {
+    text: "no lesion",
+    top: "44%",
+    delay: "1.25s",
+    drift: "8px",
+    reduceX: "42%",
+    reduceY: "6px",
+    reduceScale: "0.95"
+  },
+  {
+    text: "kidneys normal",
+    top: "68%",
+    delay: "2.35s",
+    drift: "-10px",
+    reduceX: "66%",
+    reduceY: "-3px",
+    reduceScale: "0.88"
+  }
+] as const;
+
+const heroReportLines = [
+  { text: "Liver: Normal echotexture.", width: "100%" },
+  { text: "Gall bladder: No calculus.", width: "100%" },
+  { text: "Pancreas: Unremarkable.", width: "100%" },
+  { text: "Spleen: Normal size.", width: "100%" },
+  { text: "Kidneys: No hydronephrosis.", width: "100%" },
+  { text: "Impression: No acute finding.", width: "100%" }
+] as const;
+
+function HeroPipelineIllustration() {
   return (
-    <div className="relative mx-auto max-w-[560px]">
-      <div className="absolute -left-8 top-12 z-20 hidden w-56 rounded-[1.75rem] border border-white/80 bg-white/95 p-4 shadow-2xl shadow-slate-300/60 backdrop-blur lg:block">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-          Live workflow
-        </p>
-        <p className="mt-2 text-sm font-semibold text-slate-900">Recording to report in one flow</p>
-        <div className="mt-4 rounded-2xl bg-slate-950 px-4 py-3 text-white">
-          <div className="flex h-12 items-end gap-1.5">
-            {[14, 24, 18, 30, 20, 34, 22, 16].map((height, index) => (
-              <span
-                key={`${height}-${index}`}
-                className="w-2 rounded-full bg-gradient-to-t from-accent-500 to-sky-300"
-                style={{ height }}
-              />
-            ))}
-          </div>
-          <p className="mt-3 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">
-            Dictation active
-          </p>
-        </div>
-      </div>
+    <div className="relative mx-auto w-full max-w-[760px]">
+      <div className="hero-pipeline-shell">
+        <div className="hero-pipeline-glow hero-pipeline-glow-primary" />
+        <div className="hero-pipeline-glow hero-pipeline-glow-secondary" />
 
-      <div className="overflow-hidden rounded-[2rem] border border-white/70 bg-white/90 shadow-[0_32px_100px_rgba(15,23,42,0.16)] backdrop-blur">
-        <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-          <div className="flex items-center gap-2">
-            <span className="h-3 w-3 rounded-full bg-slate-200" />
-            <span className="h-3 w-3 rounded-full bg-slate-200" />
-            <span className="h-3 w-3 rounded-full bg-slate-200" />
-          </div>
-          <div className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-500">
-            {`app.${"raddie-ai"}`}
-          </div>
-        </div>
-
-        <div className="grid gap-0 lg:grid-cols-[0.92fr_1.08fr]">
-          <div className="border-b border-slate-200 bg-slate-950 p-5 text-white lg:border-b-0 lg:border-r lg:border-slate-800">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-blue-200">
-                  Dashboard
-                </p>
-                <h3 className="mt-2 text-xl font-bold">Active worklist</h3>
-              </div>
-              <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-blue-100">
-                Ready
-              </span>
-            </div>
-
-            <div className="mt-5 space-y-3">
-              {[
-                ["USG Abdomen", "Pending review"],
-                ["KUB Follow-up", "Draft synced"],
-                ["Custom Template", "Profile approved"]
-              ].map(([title, state], index) => (
-                <div
-                  key={title}
-                  className={`rounded-2xl border px-4 py-4 ${
-                    index === 0
-                      ? "border-primary/40 bg-primary/15"
-                      : "border-white/10 bg-white/5"
-                  }`}
-                >
-                  <p className="text-sm font-semibold text-white">{title}</p>
-                  <p className="mt-1 text-xs text-slate-400">{state}</p>
-                </div>
+        <div className="hero-pipeline-scene">
+          <div className="hero-pipeline-stream" aria-hidden="true">
+            <div className="hero-pipeline-wave-ribbon">
+              {heroWaveBars.map((height, index) => (
+                <span
+                  key={`${height}-${index}`}
+                  style={
+                    {
+                      height,
+                      animationDelay: `${index * 0.11}s`
+                    } as CSSProperties
+                  }
+                />
               ))}
             </div>
 
-            <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4">
-              <div className="flex h-16 items-end gap-1.5">
-                {[20, 36, 28, 44, 32, 50, 30, 40, 24, 34].map((height, index) => (
-                  <span
-                    key={`${height}-${index}`}
-                    className="w-2 rounded-full bg-gradient-to-t from-accent-500 to-sky-300"
-                    style={{ height }}
-                  />
+            {heroFlowTokens.map((token) => (
+              <span
+                key={token.text}
+                className="hero-pipeline-token"
+                style={
+                  {
+                    top: token.top,
+                    "--delay": token.delay,
+                    "--drift": token.drift,
+                    "--reduce-x": token.reduceX,
+                    "--reduce-y": token.reduceY,
+                    "--reduce-scale": token.reduceScale
+                  } as HeroAnimationStyle
+                }
+              >
+                {token.text}
+              </span>
+            ))}
+          </div>
+
+          <div className="hero-pipeline-filter" aria-hidden="true">
+            <span />
+            <span />
+          </div>
+
+          <div className="hero-pipeline-report">
+            <div className="hero-pipeline-report-sheet">
+              <div className="hero-pipeline-report-content">
+                {heroReportLines.map((line, index) => (
+                  <div key={line.text} className="hero-pipeline-report-row">
+                    <span className="hero-pipeline-report-ghost">{line.text}</span>
+                    <span
+                      className={`hero-pipeline-report-type hero-pipeline-report-type-${index + 1}`}
+                      style={{ "--line-width": line.width } as HeroAnimationStyle}
+                    >
+                      {line.text}
+                    </span>
+                  </div>
                 ))}
               </div>
-              <p className="mt-3 text-xs uppercase tracking-[0.2em] text-slate-500">
-                Live dictation
-              </p>
             </div>
           </div>
-
-          <div className="bg-slate-50 p-5">
-            <div className="rounded-[1.5rem] border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
-                    Report editor
-                  </p>
-                  <h3 className="mt-2 text-xl font-bold text-slate-950">Generated findings</h3>
-                </div>
-                <span className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold text-primary">
-                  Synced
-                </span>
-              </div>
-
-              <div className="mt-5 space-y-3 text-sm leading-7 text-slate-600">
-                <p>Liver is normal in size and echotexture. No focal lesion is seen.</p>
-                <p>Gall bladder is well distended. No calculus or sludge is identified.</p>
-                <p>Both kidneys are normal in size and position. No hydronephrosis.</p>
-                <p className="rounded-2xl bg-slate-100 px-4 py-3 font-medium text-slate-900">
-                  Impression: No significant abnormality detected on this examination.
-                </p>
-              </div>
-
-              <div className="mt-5 flex flex-wrap gap-2">
-                <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500">
-                  Finalize
-                </span>
-                <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500">
-                  Export
-                </span>
-                <span className="rounded-full border border-slate-200 px-3 py-1 text-xs text-slate-500">
-                  Save draft
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="absolute -bottom-8 right-6 z-20 hidden w-64 rounded-[1.65rem] border border-white/80 bg-white/95 p-4 shadow-2xl shadow-slate-300/60 backdrop-blur lg:block">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-              Review queue
-            </p>
-            <p className="mt-1 text-sm font-semibold text-slate-950">Cases ready to finalize</p>
-          </div>
-          <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[11px] font-semibold text-primary">
-            4 ready
-          </span>
-        </div>
-
-        <div className="mt-4 space-y-2.5">
-          {[
-            ["Whole Abdomen", "Impression added"],
-            ["Renal study", "Export pending"],
-            ["Pelvis report", "Needs review"]
-          ].map(([title, state], index) => (
-            <div
-              key={title}
-              className={`rounded-2xl px-3.5 py-3 ${
-                index === 0 ? "bg-slate-950 text-white" : "bg-slate-100 text-slate-900"
-              }`}
-            >
-              <p className="text-sm font-semibold">{title}</p>
-              <p className={`mt-1 text-xs ${index === 0 ? "text-slate-400" : "text-slate-500"}`}>
-                {state}
-              </p>
-            </div>
-          ))}
         </div>
       </div>
     </div>
@@ -318,13 +284,13 @@ function PreviewBrowser() {
 
 function WorkflowDashboardPreview() {
   return (
-    <div className="h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
-      <div className="flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
+    <div className="workflow-preview-shell workflow-preview-dashboard h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
+      <div className="workflow-preview-card flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
         <div className="flex items-center justify-between">
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
             Dashboard
           </p>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-500">
+          <span className="workflow-dashboard-chip rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold text-slate-500">
             3 active
           </span>
         </div>
@@ -337,10 +303,9 @@ function WorkflowDashboardPreview() {
           ].map(([title, state], index) => (
             <div
               key={title}
-                className={`rounded-[1.15rem] border px-4 py-2.5 ${
-                  index === 0
-                    ? "border-primary/20 bg-primary/5"
-                    : "border-slate-200 bg-slate-50"
+              style={{ animationDelay: `${index * 0.16}s` }}
+              className={`workflow-dashboard-row workflow-dashboard-row-select-${index + 1} rounded-[1.15rem] border px-4 py-2.5 ${
+                index === 0 ? "workflow-dashboard-row-active" : ""
               }`}
             >
               <p className="text-sm font-semibold text-slate-950">{title}</p>
@@ -350,11 +315,11 @@ function WorkflowDashboardPreview() {
         </div>
 
         <div className="mt-auto grid gap-3 sm:grid-cols-2">
-          <div className="rounded-[1.15rem] bg-slate-950 px-4 py-3.5 text-white">
+          <div className="workflow-dashboard-panel rounded-[1.15rem] bg-slate-950 px-4 py-3.5 text-white">
             <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Template</p>
             <p className="mt-2 text-sm font-semibold">Abdomen profile loaded</p>
           </div>
-          <div className="rounded-[1.15rem] border border-slate-200 bg-white px-4 py-3.5">
+          <div className="workflow-dashboard-panel workflow-dashboard-panel-delay rounded-[1.15rem] border border-slate-200 bg-white px-4 py-3.5">
             <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Session</p>
             <p className="mt-2 text-sm font-semibold text-slate-950">Recording ready</p>
           </div>
@@ -366,19 +331,24 @@ function WorkflowDashboardPreview() {
 
 function WorkflowRecordingPreview() {
   return (
-    <div className="h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
-      <div className="flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
+    <div className="workflow-preview-shell workflow-preview-recording h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
+      <div className="workflow-preview-card flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
         <div className="flex flex-col items-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-primary text-2xl text-white shadow-lg shadow-primary/25">
+          <div className="workflow-recording-orb flex h-14 w-14 items-center justify-center rounded-full bg-primary text-2xl text-white shadow-lg shadow-primary/25">
             •
           </div>
-          <p className="mt-3 text-base font-semibold text-slate-950">Recording... 02:34</p>
-          <div className="mt-3 flex h-10 items-end gap-1.5">
+          <p className="workflow-recording-clock mt-3 text-base font-semibold text-slate-950">
+            Recording... 02:34
+          </p>
+          <div className="workflow-recording-wave mt-3 flex h-10 items-end gap-1.5">
             {[12, 22, 16, 26, 18, 30, 20, 28, 16, 24].map((height, index) => (
               <span
                 key={`${height}-${index}`}
-                className="w-2.5 rounded-full bg-gradient-to-t from-primary to-sky-300"
-                style={{ height }}
+                className="workflow-recording-wave-bar w-2.5 rounded-full bg-gradient-to-t from-primary to-sky-300"
+                style={{
+                  height,
+                  animationDelay: `${index * 0.08}s`
+                }}
               />
             ))}
           </div>
@@ -396,10 +366,14 @@ function WorkflowRecordingPreview() {
               ["Kidneys", "In progress"],
               ["Spleen", "Pending"]
             ].map(([organ, state], index) => (
-              <div key={organ} className="flex items-center justify-between rounded-2xl bg-white px-3 py-2">
+              <div
+                key={organ}
+                style={{ animationDelay: `${index * 0.14}s` }}
+                className="workflow-recording-check-row flex items-center justify-between rounded-2xl bg-white px-3 py-2"
+              >
                 <div className="flex items-center gap-3">
                   <span
-                    className={`h-2.5 w-2.5 rounded-full ${
+                    className={`workflow-recording-check-dot h-2.5 w-2.5 rounded-full ${
                       index < 2 ? "bg-emerald-500" : index === 2 ? "bg-primary" : "bg-slate-300"
                     }`}
                   />
@@ -417,38 +391,56 @@ function WorkflowRecordingPreview() {
 
 function WorkflowReportPreview() {
   return (
-    <div className="h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
-      <div className="flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
+    <div className="workflow-preview-shell workflow-preview-report h-[14.5rem] overflow-hidden rounded-[1.75rem] bg-[#f4f7fb] p-4">
+      <div className="workflow-preview-card flex h-full flex-col overflow-hidden rounded-[1.45rem] border border-white bg-white p-4 shadow-[0_20px_50px_rgba(15,23,42,0.08)]">
         <div className="flex gap-2 rounded-[1.2rem] bg-slate-100 p-1">
           {["Findings", "Impression", "Export"].map((tab, index) => (
             <span
               key={tab}
-              className={`rounded-[0.95rem] px-3 py-2 text-xs font-semibold ${
-                index === 0 ? "bg-white text-slate-950 shadow-sm" : "text-slate-500"
-              }`}
+              className={`workflow-report-tab workflow-report-tab-${index + 1} rounded-[0.95rem] px-3 py-2 text-xs font-semibold`}
             >
               {tab}
             </span>
           ))}
         </div>
 
-        <div className="mt-4 flex-1 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4">
-          <div className="space-y-2.5 text-sm leading-6 text-slate-700">
-            <p>
+        <div className="workflow-report-editor mt-4 flex-1 rounded-[1.25rem] border border-slate-200 bg-white px-4 py-4">
+          <div className="workflow-report-panel workflow-report-panel-1 space-y-2.5 text-sm leading-6 text-slate-700">
+            <p className="workflow-report-line">
               <span className="font-semibold text-slate-950">Liver:</span> Normal in size and
-              echotexture. No focal lesion is seen.
+              echotexture.
             </p>
-            <p>
-              <span className="font-semibold text-slate-950">Gall bladder:</span> Well distended.
-              No calculus or sludge identified.
+            <p className="workflow-report-line">
+              <span className="font-semibold text-slate-950">Gall bladder:</span> No calculus or
+              sludge identified.
             </p>
-            <p>
-              <span className="font-semibold text-slate-950">Kidneys:</span> Normal in size and
-              position. No hydronephrosis.
+            <p className="workflow-report-line">
+              <span className="font-semibold text-slate-950">Kidneys:</span> No hydronephrosis.
             </p>
-            <p className="rounded-[1rem] bg-slate-100 px-4 py-2.5 font-medium text-slate-950">
-              Impression: No significant abnormality detected on this examination.
+          </div>
+
+          <div className="workflow-report-panel workflow-report-panel-2 space-y-3 text-sm leading-6 text-slate-700">
+            <p className="workflow-report-summary-label text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+              Impression
             </p>
+            <p className="rounded-[1rem] bg-slate-100 px-4 py-3 font-medium text-slate-950">
+              No significant abnormality detected on this examination.
+            </p>
+            <p className="text-sm text-slate-500">Ready for final doctor review.</p>
+          </div>
+
+          <div className="workflow-report-panel workflow-report-panel-3 space-y-3 text-sm leading-6 text-slate-700">
+            <p className="workflow-report-summary-label text-[11px] font-semibold uppercase tracking-[0.22em] text-primary">
+              Export ready
+            </p>
+            <div className="flex items-center justify-between rounded-[1rem] bg-slate-100 px-4 py-3">
+              <span className="font-medium text-slate-950">PDF report</span>
+              <span className="text-xs font-semibold text-primary">Ready</span>
+            </div>
+            <div className="flex items-center justify-between rounded-[1rem] bg-slate-100 px-4 py-3">
+              <span className="font-medium text-slate-950">DOCX copy</span>
+              <span className="text-xs font-semibold text-primary">Ready</span>
+            </div>
           </div>
         </div>
       </div>
@@ -712,11 +704,18 @@ export default function LandingHome({
       <main id="top" className="relative z-10">
         <section
           ref={heroSectionRef}
-          className="mx-auto max-w-7xl px-4 pb-14 pt-10 sm:px-6 lg:px-8 lg:pb-24 lg:pt-16"
+          className="mx-auto max-w-7xl px-4 pb-14 pt-6 sm:px-6 sm:pt-10 lg:px-8 lg:pb-24 lg:pt-16"
         >
-          <div className="grid gap-12 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)] lg:items-center">
-            <div className="max-w-3xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-primary/15 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-primary shadow-sm backdrop-blur">
+          <div className="mb-4 flex lg:hidden">
+            <div className="inline-flex items-center gap-2 rounded-full border border-primary/15 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-primary shadow-sm backdrop-blur">
+              <span className="h-2 w-2 rounded-full bg-primary" />
+              Structured radiology reporting from dictation to delivery
+            </div>
+          </div>
+
+          <div className="grid gap-10 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.95fr)] lg:items-center lg:gap-12">
+            <div className="order-2 max-w-3xl lg:order-1">
+              <div className="hidden items-center gap-2 rounded-full border border-primary/15 bg-white/80 px-4 py-2 text-xs font-semibold uppercase tracking-[0.22em] text-primary shadow-sm backdrop-blur lg:inline-flex">
                 <span className="h-2 w-2 rounded-full bg-primary" />
                 Structured radiology reporting from dictation to delivery
               </div>
@@ -750,7 +749,9 @@ export default function LandingHome({
               </div>
             </div>
 
-            <PreviewBrowser />
+            <div className="order-1 lg:order-2">
+              <HeroPipelineIllustration />
+            </div>
           </div>
         </section>
 
@@ -813,7 +814,7 @@ export default function LandingHome({
             {workflowSteps.map((step) => (
               <article
                 key={step.step}
-                className="flex h-full flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-[0_26px_60px_rgba(15,23,42,0.08)]"
+                className="flex h-full min-h-[41rem] flex-col overflow-hidden rounded-[2rem] border border-slate-200 bg-white shadow-[0_26px_60px_rgba(15,23,42,0.08)]"
               >
                 <div className="shrink-0 p-4 pb-0">
                   <WorkflowPreview preview={step.preview} />
@@ -834,6 +835,17 @@ export default function LandingHome({
                         <span>{bullet}</span>
                       </div>
                     ))}
+                  </div>
+
+                  <div className="mt-auto pt-6">
+                    <button
+                      type="button"
+                      className="inline-flex items-center gap-2 self-start rounded-full bg-primary px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
+                      onClick={() => openAuthSheet("signup")}
+                    >
+                      <ActionIcon icon="play" />
+                      Try for free
+                    </button>
                   </div>
                 </div>
               </article>
