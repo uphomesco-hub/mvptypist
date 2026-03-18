@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 import "./globals.css";
 
-const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://raddie.ai";
+const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://raddie.in";
 
 const spaceGrotesk = Space_Grotesk({
   subsets: ["latin"],
