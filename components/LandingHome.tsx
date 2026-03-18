@@ -599,7 +599,6 @@ export default function LandingHome({
   onSetAuthMode
 }: LandingHomeProps) {
   const [isAuthSheetOpen, setIsAuthSheetOpen] = useState(false);
-  const [showFloatingMobileCta, setShowFloatingMobileCta] = useState(false);
   const heroSectionRef = useRef<HTMLElement | null>(null);
 
   const updateHeroBlobPosition = (clientX: number, clientY: number, opacity: string) => {
@@ -631,21 +630,6 @@ export default function LandingHome({
       window.removeEventListener("keydown", handleEscape);
     };
   }, [isAuthSheetOpen]);
-
-  useEffect(() => {
-    const heroElement = heroSectionRef.current;
-    if (!heroElement || typeof IntersectionObserver === "undefined") return;
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        setShowFloatingMobileCta(!entry.isIntersecting);
-      },
-      { threshold: 0.2 }
-    );
-
-    observer.observe(heroElement);
-    return () => observer.disconnect();
-  }, []);
 
   const openAuthSheet = (mode: AuthMode) => {
     onSetAuthMode(mode);
@@ -1023,16 +1007,15 @@ export default function LandingHome({
         </div>
       </footer>
 
-      {showFloatingMobileCta && (
-        <button
-          type="button"
-          className="fixed bottom-4 left-4 right-4 z-30 rounded-2xl bg-primary px-5 py-3.5 text-sm font-semibold text-white shadow-2xl shadow-primary/30 sm:hidden"
-          style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
-          onClick={() => openAuthSheet("signup")}
-        >
-          Try for free
-        </button>
-      )}
+      <button
+        type="button"
+        className="fixed left-4 right-4 z-30 inline-flex items-center justify-center gap-2 rounded-2xl bg-primary px-5 py-3.5 text-sm font-semibold text-white shadow-2xl shadow-primary/30 transition hover:bg-primary/90 sm:hidden"
+        style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+        onClick={() => openAuthSheet("signup")}
+      >
+        <ActionIcon icon="play" />
+        Try for free
+      </button>
 
       {isAuthSheetOpen && (
         <div className="fixed inset-0 z-50">
