@@ -95,6 +95,8 @@ const MAX_EDITOR_FONT_SIZE_PX = 24;
 const DEFAULT_WORKLIST_VISIBLE_COUNT = 10;
 const BRAND_NAME = "raddie.ai";
 const REPORT_EXPORT_BASENAME = "raddie.ai-report";
+const PRODUCT_WALKTHROUGH_VERSION = 1;
+const WALKTHROUGH_STORAGE_PREFIX = "mvptypist.walkthroughSeen";
 const DEFAULT_PROFILE_IMAGE_URL =
   "https://lh3.googleusercontent.com/aida-public/AB6AXuAQY8yGZ6jxkfslrkZwrL2UAZXeSbxx_gxAuQb8CBi7XV92sG5i644A5-6WJQTcujmf1y90Odf01PKlPXRuLz_0wHfDQ2SR160F7g36KKQhtm1VU76QxxWNHG3smwGxmWUdJNatDBE2QVzL5boNFB0IsBgpSteGrlivpyoiFf-QbC1l3ZAwBkyn4ODppXSjxiOtYt4TToa4_DTNJaJsjjIO2w6YsfUtSGPoxWIFg5TNW1PkdUDGxF4gt5FQ1PUYCZTLNe61RTDIQg";
 const REPORT_HEADINGS = [
@@ -195,6 +197,141 @@ function normalizeHeadingKey(heading: string) {
 
 function isKubTemplateId(templateId: string) {
   return templateId === "USG_KUB_MALE" || templateId === "USG_KUB_FEMALE";
+}
+
+function HoverHint({
+  message,
+  className = "",
+  children
+}: {
+  message?: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={className} title={message}>
+      {children}
+    </div>
+  );
+}
+
+function walkthroughStorageKey(uid: string) {
+  return `${WALKTHROUGH_STORAGE_PREFIX}:${uid}`;
+}
+
+function readWalkthroughSeenVersion(uid: string) {
+  if (typeof window === "undefined" || !uid) return 0;
+  try {
+    const raw = window.localStorage.getItem(walkthroughStorageKey(uid));
+    const parsed = Number.parseInt(String(raw || "0"), 10);
+    return Number.isFinite(parsed) ? parsed : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeWalkthroughSeenVersion(uid: string, version: number) {
+  if (typeof window === "undefined" || !uid) return;
+  try {
+    window.localStorage.setItem(walkthroughStorageKey(uid), String(version));
+  } catch {
+    // Ignore storage write failures and rely on profile persistence.
+  }
+}
+
+function WalkthroughOverlay({
+  step,
+  stepIndex,
+  totalSteps,
+  onBack,
+  onNext,
+  onSkip
+}: {
+  step: WalkthroughStep;
+  stepIndex: number;
+  totalSteps: number;
+  onBack: () => void;
+  onNext: () => void;
+  onSkip: () => void;
+}) {
+  const isFirstStep = stepIndex === 0;
+  const isLastStep = stepIndex === totalSteps - 1;
+
+  return (
+    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/70 p-3 backdrop-blur-sm md:items-center md:p-6">
+      <div className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl dark:bg-slate-900">
+        <div className="bg-gradient-to-r from-primary via-sky-500 to-emerald-400 px-6 py-5 text-white">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/75">
+                Product Walkthrough
+              </p>
+              <h2 className="mt-2 text-2xl font-bold">{step.title}</h2>
+            </div>
+            <button
+              type="button"
+              className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold text-white transition hover:bg-white/10"
+              onClick={onSkip}
+            >
+              Skip Tour
+            </button>
+          </div>
+          <div className="mt-4 flex items-center justify-between gap-4 text-xs font-semibold uppercase tracking-wide text-white/80">
+            <span>{step.label}</span>
+            <span>{`Step ${stepIndex + 1} of ${totalSteps}`}</span>
+          </div>
+        </div>
+
+        <div className="px-6 py-6">
+          <p className="text-base leading-7 text-slate-600 dark:text-slate-300">
+            {step.description}
+          </p>
+          <div className="mt-5 space-y-3">
+            {step.bullets.map((item) => (
+              <div
+                key={`${step.id}-${item}`}
+                className="flex items-start gap-3 rounded-2xl bg-slate-50 px-4 py-3 dark:bg-slate-800/80"
+              >
+                <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                  <span className="material-icons-round text-sm">check</span>
+                </span>
+                <p className="text-sm leading-6 text-slate-700 dark:text-slate-200">{item}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-6 flex items-center gap-2">
+            {Array.from({ length: totalSteps }).map((_, index) => (
+              <span
+                key={`${step.id}-dot-${index}`}
+                className={`h-2.5 rounded-full transition-all ${
+                  index === stepIndex ? "w-8 bg-primary" : "w-2.5 bg-slate-200 dark:bg-slate-700"
+                }`}
+              />
+            ))}
+          </div>
+
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
+            <button
+              type="button"
+              className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+              onClick={onBack}
+              disabled={isFirstStep}
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
+              onClick={onNext}
+            >
+              {isLastStep ? "Finish Tour" : "Next Page"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function isKubKidneyHeading(heading: string) {
@@ -733,12 +870,16 @@ function labelForSectionKey(sectionKey: CustomTemplateSectionKey) {
   return sectionKey.replace(/_/g, " ");
 }
 
+type AppView = "dashboard" | "recording" | "report" | "admin" | "profile";
+
 type DoctorProfile = {
   displayName: string;
   role: string;
   email: string;
   phone: string;
   avatarUrl: string;
+  walkthroughSeenVersion: number;
+  walkthroughDismissedAtMs: number;
 };
 
 type SavedCustomTemplate = {
@@ -775,6 +916,15 @@ type IssueSummaryPayload = {
   likely_model_gaps: string[];
   quality_score: number;
   source: "ai" | "fallback";
+};
+
+type WalkthroughStep = {
+  id: string;
+  view: AppView;
+  label: string;
+  title: string;
+  description: string;
+  bullets: string[];
 };
 
 type DiffOpKind = "equal" | "remove" | "add";
@@ -1087,9 +1237,7 @@ export default function Home() {
   const [disclaimer, setDisclaimer] = useState("");
   const [rawJson, setRawJson] = useState("");
   const [isFullscreen, setIsFullscreen] = useState(false);
-  const [activeView, setActiveView] = useState<
-    "dashboard" | "recording" | "report" | "admin" | "profile"
-  >("dashboard");
+  const [activeView, setActiveView] = useState<AppView>("dashboard");
   const [customTemplateText, setCustomTemplateText] = useState("");
   const [customTemplateGender, setCustomTemplateGender] = useState<UsgGender>("male");
   const [customTemplateMapping, setCustomTemplateMapping] = useState<CustomTemplateMapping>({});
@@ -1142,6 +1290,9 @@ export default function Home() {
   const [profileAvatarPreviewUrl, setProfileAvatarPreviewUrl] = useState("");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [isProfileImageMenuOpen, setIsProfileImageMenuOpen] = useState(false);
+  const [isWalkthroughOpen, setIsWalkthroughOpen] = useState(false);
+  const [walkthroughStepIndex, setWalkthroughStepIndex] = useState(0);
+  const [hasResolvedWalkthrough, setHasResolvedWalkthrough] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -1306,6 +1457,80 @@ export default function Home() {
   const selectedAdminIssueSummary = selectedAdminIssue
     ? issueSummaries[selectedAdminIssue.issueId] || null
     : null;
+  const walkthroughSteps = useMemo(() => {
+    const steps: WalkthroughStep[] = [
+      {
+        id: "dashboard",
+        view: "dashboard",
+        label: "Dashboard",
+        title: "Dashboard and Template Setup",
+        description:
+          "This is the main workspace landing page. Start here by picking a study template, checking the live worklist, and opening a fresh report session.",
+        bullets: [
+          "Choose a template card first. Template selection unlocks recording and report creation.",
+          "Use Start New Report to jump into dictation once a template is selected.",
+          "The worklist below keeps draft, pending, and completed reports together."
+        ]
+      },
+      {
+        id: "recording",
+        view: "recording",
+        label: "Recording",
+        title: "Capture or Upload Dictation",
+        description:
+          "The recording page is where audio enters the system. Dictate live, upload saved audio, and track topic coverage before generating the draft.",
+        bullets: [
+          "Use the main recording control to start, pause, resume, or stop dictation.",
+          "Upload works as a fallback if audio was recorded elsewhere.",
+          "The template checklist on the side shows which sections are being covered."
+        ]
+      },
+      {
+        id: "report",
+        view: "report",
+        label: "Report Editor",
+        title: "Review and Finalize the Draft",
+        description:
+          "The editor is the review surface for AI output. Update wording, polish formatting, export files, and move the report through draft or final status.",
+        bullets: [
+          "Edit the generated report directly in the main editor.",
+          "Use export, formatting, and re-record tools without leaving the case workflow.",
+          "Save as draft or finalize once the report is ready for sign-off."
+        ]
+      },
+      {
+        id: "profile",
+        view: "profile",
+        label: "Profile",
+        title: "Keep Your Profile Updated",
+        description:
+          "Profile settings let each doctor keep their name and image current so saved work and ownership metadata stay clean across the app.",
+        bullets: [
+          "Update your display name to keep report ownership readable.",
+          "Upload or capture a profile photo from the same page.",
+          "Changes save back to your account profile and appear across the workspace."
+        ]
+      }
+    ];
+
+    if (isAdmin) {
+      steps.push({
+        id: "admin",
+        view: "admin",
+        label: "Admin",
+        title: "Review Edits in Admin Issues",
+        description:
+          "Admin Issues is the quality control page for review leads. It shows report edits, highlights differences, and summarizes model gaps for follow-up.",
+        bullets: [
+          "Open any reported issue to compare the AI draft with the final doctor-edited version.",
+          "Use the summary panel to spot repeat quality problems quickly.",
+          "This page only appears for admin accounts."
+        ]
+      });
+    }
+
+    return steps;
+  }, [isAdmin]);
 
   useEffect(() => {
     setIsWorklistExpanded(false);
@@ -1448,6 +1673,50 @@ export default function Home() {
   }, [activeView]);
 
   useEffect(() => {
+    if (!currentUser) {
+      setIsWalkthroughOpen(false);
+      setWalkthroughStepIndex(0);
+      setHasResolvedWalkthrough(false);
+      return;
+    }
+    if (!doctorProfile || hasResolvedWalkthrough) return;
+
+    const localSeenVersion = readWalkthroughSeenVersion(currentUser.uid);
+    const effectiveSeenVersion = Math.max(
+      localSeenVersion,
+      doctorProfile.walkthroughSeenVersion || 0
+    );
+
+    if (effectiveSeenVersion >= PRODUCT_WALKTHROUGH_VERSION) {
+      setHasResolvedWalkthrough(true);
+      return;
+    }
+
+    const timer = window.setTimeout(() => {
+      setWalkthroughStepIndex(0);
+      setIsWalkthroughOpen(true);
+      setActiveView("dashboard");
+      setHasResolvedWalkthrough(true);
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    currentUser,
+    doctorProfile,
+    doctorProfile?.walkthroughSeenVersion,
+    hasResolvedWalkthrough
+  ]);
+
+  useEffect(() => {
+    if (!isWalkthroughOpen) return;
+    const activeStep = walkthroughSteps[walkthroughStepIndex];
+    if (!activeStep) return;
+    if (activeView !== activeStep.view) {
+      setActiveView(activeStep.view);
+    }
+  }, [activeView, isWalkthroughOpen, walkthroughStepIndex, walkthroughSteps]);
+
+  useEffect(() => {
     if (!firebaseClient) {
       return;
     }
@@ -1474,7 +1743,13 @@ export default function Home() {
           role: String(existing?.role || "Radiologist"),
           email: String(existing?.email || user.email || ""),
           phone: String(existing?.phone || ""),
-          avatarUrl: String(existing?.avatarUrl || user.photoURL || "")
+          avatarUrl: String(existing?.avatarUrl || user.photoURL || ""),
+          walkthroughSeenVersion: Math.max(
+            Number(existing?.walkthroughSeenVersion || 0) || 0,
+            readWalkthroughSeenVersion(user.uid)
+          ),
+          walkthroughDismissedAtMs:
+            parseTimestampToMillis(existing?.walkthroughDismissedAt) || 0
         };
         await setDoc(
           profileRef,
@@ -1484,6 +1759,9 @@ export default function Home() {
             email: profile.email,
             phone: profile.phone,
             avatarUrl: profile.avatarUrl,
+            walkthroughSeenVersion: profile.walkthroughSeenVersion,
+            walkthroughDismissedAt:
+              existing?.walkthroughDismissedAt || null,
             updatedAt: serverTimestamp(),
             createdAt: existing?.createdAt || serverTimestamp()
           },
@@ -2365,6 +2643,57 @@ export default function Home() {
     setActiveView("profile");
   };
 
+  const persistWalkthroughSeen = async (reason: "skipped" | "completed") => {
+    if (!currentUser) return;
+
+    writeWalkthroughSeenVersion(currentUser.uid, PRODUCT_WALKTHROUGH_VERSION);
+    setDoctorProfile((current) =>
+      current
+        ? {
+            ...current,
+            walkthroughSeenVersion: PRODUCT_WALKTHROUGH_VERSION,
+            walkthroughDismissedAtMs: Date.now()
+          }
+        : current
+    );
+
+    if (!firebaseClient) return;
+
+    try {
+      await setDoc(
+        doc(firebaseClient.db, `users/${currentUser.uid}/profile/main`),
+        {
+          walkthroughSeenVersion: PRODUCT_WALKTHROUGH_VERSION,
+          walkthroughDismissedAt: serverTimestamp(),
+          walkthroughDismissedReason: reason,
+          updatedAt: serverTimestamp()
+        },
+        { merge: true }
+      );
+    } catch (walkthroughError) {
+      setError(firebaseErrorMessage(walkthroughError));
+    }
+  };
+
+  const closeWalkthrough = (reason: "skipped" | "completed") => {
+    setIsWalkthroughOpen(false);
+    setWalkthroughStepIndex(0);
+    setActiveView("dashboard");
+    void persistWalkthroughSeen(reason);
+  };
+
+  const goToNextWalkthroughStep = () => {
+    if (walkthroughStepIndex >= walkthroughSteps.length - 1) {
+      closeWalkthrough("completed");
+      return;
+    }
+    setWalkthroughStepIndex((current) => Math.min(current + 1, walkthroughSteps.length - 1));
+  };
+
+  const goToPreviousWalkthroughStep = () => {
+    setWalkthroughStepIndex((current) => Math.max(current - 1, 0));
+  };
+
   const triggerProfileImagePicker = (mode: "camera" | "library") => {
     setIsProfileImageMenuOpen(false);
     if (mode === "camera") {
@@ -2449,7 +2778,9 @@ export default function Home() {
         role: nextRole,
         email: nextEmail,
         phone: nextPhone,
-        avatarUrl
+        avatarUrl,
+        walkthroughSeenVersion: doctorProfile?.walkthroughSeenVersion || 0,
+        walkthroughDismissedAtMs: doctorProfile?.walkthroughDismissedAtMs || 0
       });
       if (profileAvatarObjectUrlRef.current) {
         URL.revokeObjectURL(profileAvatarObjectUrlRef.current);
@@ -3223,6 +3554,24 @@ export default function Home() {
     (activeReportStatus === "pending_review" ||
       activeReportStatus === "draft" ||
       (!activeReportStatus && allowRecordingFromReport));
+  const selectTemplateTooltip = "Please select a template.";
+  const startNewReportTooltip =
+    !canGoRecording && !templateId ? selectTemplateTooltip : undefined;
+  const startRecordingTooltip =
+    !canStartNewFromDashboard && !templateId ? selectTemplateTooltip : undefined;
+  const reportEditorTooltip =
+    !canResumeReportFromDashboard && !templateId ? selectTemplateTooltip : undefined;
+  const walkthroughOverlay =
+    isWalkthroughOpen && walkthroughSteps[walkthroughStepIndex] ? (
+      <WalkthroughOverlay
+        step={walkthroughSteps[walkthroughStepIndex]}
+        stepIndex={walkthroughStepIndex}
+        totalSteps={walkthroughSteps.length}
+        onBack={goToPreviousWalkthroughStep}
+        onNext={goToNextWalkthroughStep}
+        onSkip={() => closeWalkthrough("skipped")}
+      />
+    ) : null;
   const errorToast = error ? (
     <div className="floating-error">
       <div className="flex items-start gap-3">
@@ -3289,22 +3638,26 @@ export default function Home() {
               <span className="material-icons-round">dashboard</span>
               {!isSidebarCollapsed && "Dashboard"}
             </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canStartNewFromDashboard && startNewReportSession()}
-              disabled={!canStartNewFromDashboard}
-            >
-              <span className="material-icons-round">mic</span>
-              {!isSidebarCollapsed && "Recording"}
-            </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
-              disabled={!canResumeReportFromDashboard}
-            >
-              <span className="material-icons-round">edit_note</span>
-              {!isSidebarCollapsed && "Report Editor"}
-            </button>
+            <HoverHint className="w-full" message={startRecordingTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canStartNewFromDashboard && startNewReportSession()}
+                disabled={!canStartNewFromDashboard}
+              >
+                <span className="material-icons-round">mic</span>
+                {!isSidebarCollapsed && "Recording"}
+              </button>
+            </HoverHint>
+            <HoverHint className="w-full" message={reportEditorTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+                disabled={!canResumeReportFromDashboard}
+              >
+                <span className="material-icons-round">edit_note</span>
+                {!isSidebarCollapsed && "Report Editor"}
+              </button>
+            </HoverHint>
             {isAdmin && (
               <button
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
@@ -3439,14 +3792,16 @@ export default function Home() {
                   Select a template card to begin and move from dictation to finalized report in one workspace.
                 </p>
               </div>
-              <button
-                className="hidden items-center gap-3 rounded-xl bg-primary px-6 py-3 font-semibold text-white shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 md:flex"
-                disabled={!canGoRecording}
-                onClick={startNewReportSession}
-              >
-                <span className="material-icons-round">add_circle</span>
-                Start New Report
-              </button>
+              <HoverHint className="hidden md:flex" message={startNewReportTooltip}>
+                <button
+                  className="flex items-center gap-3 rounded-xl bg-primary px-6 py-3 font-semibold text-white shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
+                  disabled={!canGoRecording}
+                  onClick={startNewReportSession}
+                >
+                  <span className="material-icons-round">add_circle</span>
+                  Start New Report
+                </button>
+              </HoverHint>
             </section>
 
             {!isSearchMode && (
@@ -4079,6 +4434,7 @@ export default function Home() {
           </div>
         )}
 
+        {walkthroughOverlay}
         {errorToast}
       </div>
     );
@@ -4116,22 +4472,26 @@ export default function Home() {
               <span className="material-icons-round">dashboard</span>
               {!isSidebarCollapsed && "Dashboard"}
             </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canStartNewFromDashboard && startNewReportSession()}
-              disabled={!canStartNewFromDashboard}
-            >
-              <span className="material-icons-round">mic</span>
-              {!isSidebarCollapsed && "Recording"}
-            </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
-              disabled={!canResumeReportFromDashboard}
-            >
-              <span className="material-icons-round">edit_note</span>
-              {!isSidebarCollapsed && "Report Editor"}
-            </button>
+            <HoverHint className="w-full" message={startRecordingTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canStartNewFromDashboard && startNewReportSession()}
+                disabled={!canStartNewFromDashboard}
+              >
+                <span className="material-icons-round">mic</span>
+                {!isSidebarCollapsed && "Recording"}
+              </button>
+            </HoverHint>
+            <HoverHint className="w-full" message={reportEditorTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+                disabled={!canResumeReportFromDashboard}
+              >
+                <span className="material-icons-round">edit_note</span>
+                {!isSidebarCollapsed && "Report Editor"}
+              </button>
+            </HoverHint>
             {isAdmin && (
               <button
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
@@ -4317,6 +4677,7 @@ export default function Home() {
           </div>
         </main>
 
+        {walkthroughOverlay}
         {errorToast}
       </div>
     );
@@ -4354,22 +4715,26 @@ export default function Home() {
               <span className="material-icons-round">dashboard</span>
               {!isSidebarCollapsed && "Dashboard"}
             </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canStartNewFromDashboard && startNewReportSession()}
-              disabled={!canStartNewFromDashboard}
-            >
-              <span className="material-icons-round">mic</span>
-              {!isSidebarCollapsed && "Recording"}
-            </button>
-            <button
-              className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
-              onClick={() => canResumeReportFromDashboard && setActiveView("report")}
-              disabled={!canResumeReportFromDashboard}
-            >
-              <span className="material-icons-round">edit_note</span>
-              {!isSidebarCollapsed && "Report Editor"}
-            </button>
+            <HoverHint className="w-full" message={startRecordingTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canStartNewFromDashboard && startNewReportSession()}
+                disabled={!canStartNewFromDashboard}
+              >
+                <span className="material-icons-round">mic</span>
+                {!isSidebarCollapsed && "Recording"}
+              </button>
+            </HoverHint>
+            <HoverHint className="w-full" message={reportEditorTooltip}>
+              <button
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
+                onClick={() => canResumeReportFromDashboard && setActiveView("report")}
+                disabled={!canResumeReportFromDashboard}
+              >
+                <span className="material-icons-round">edit_note</span>
+                {!isSidebarCollapsed && "Report Editor"}
+              </button>
+            </HoverHint>
             <button className="flex w-full items-center gap-3 rounded-lg bg-primary/10 px-3 py-3 text-left font-medium text-primary">
               <span className="material-icons-round">bug_report</span>
               {!isSidebarCollapsed && `Admin Issues (${adminIssueCount})`}
@@ -4678,6 +5043,7 @@ export default function Home() {
           </div>
         </main>
 
+        {walkthroughOverlay}
         {errorToast}
       </div>
     );
@@ -5105,6 +5471,7 @@ export default function Home() {
           <div>{`AI ENGINE: ${BRAND_NAME} | EN-US`}</div>
         </footer>
 
+        {walkthroughOverlay}
         {errorToast}
       </div>
     );
@@ -5622,6 +5989,7 @@ export default function Home() {
         </button>
       </div>
 
+      {walkthroughOverlay}
       {errorToast}
 
       {isFullscreen && (
