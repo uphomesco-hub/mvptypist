@@ -85,6 +85,18 @@ export function extractObservationCoreText(text: string) {
   return extractObservationLines(text).join("\n");
 }
 
+export function extractGeneratedObservationsFromRawJson(rawJson: string) {
+  if (!rawJson.trim()) return "";
+  try {
+    const parsed = JSON.parse(rawJson) as Record<string, unknown>;
+    return typeof parsed.observations === "string"
+      ? parsed.observations.replace(/\r\n/g, "\n").trim()
+      : "";
+  } catch {
+    return "";
+  }
+}
+
 export function computeObservationEditStats(
   aiText: string,
   finalText: string

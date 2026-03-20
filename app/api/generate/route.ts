@@ -1126,7 +1126,7 @@ export async function POST(request: NextRequest) {
       );
     }
     const customTemplateHash = isCustomTemplate
-      ? hashTemplateText(customTemplateText.trim())
+      ? hashTemplateText(customTemplateText)
       : "";
     const customTemplateProfile: TemplateProfile | null = isCustomTemplate
       ? sanitizeTemplateProfile(customTemplateProfileRaw || "", {

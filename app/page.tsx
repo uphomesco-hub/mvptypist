@@ -34,6 +34,7 @@ import { getFirebaseClient, isFirebaseClientConfigured } from "@/lib/firebaseCli
 import {
   computeObservationEditStats,
   deriveDashboardStats,
+  extractGeneratedObservationsFromRawJson,
   extractObservationCoreText,
   fileNameSafe,
   labelForStatus,
@@ -88,6 +89,10 @@ const ISSUE_SUMMARY_ENDPOINT = API_BASE_URL
   ? `${API_BASE_URL.replace(/\/$/, "")}/api/admin-issue-summary`
   : "/api/admin-issue-summary";
 const ADMIN_EMAIL = "yashovrat56@gmail.com";
+const DEFAULT_EDITOR_FONT_SIZE_PX = 16;
+const MIN_EDITOR_FONT_SIZE_PX = 12;
+const MAX_EDITOR_FONT_SIZE_PX = 24;
+const DEFAULT_WORKLIST_VISIBLE_COUNT = 10;
 const BRAND_NAME = "raddie.ai";
 const REPORT_EXPORT_BASENAME = "raddie.ai-report";
 const DEFAULT_PROFILE_IMAGE_URL =
@@ -572,6 +577,29 @@ type StoredCustomTemplateConfig = {
   updatedAt: string;
 };
 
+function hasMeaningfulCustomTemplateText(templateText: string) {
+  return Boolean(templateText.trim());
+}
+
+function getCustomTemplateHash(templateText: string) {
+  return hashTemplateText(templateText);
+}
+
+function getCustomTemplateHashCandidates(templateText: string) {
+  const exactHash = getCustomTemplateHash(templateText);
+  const candidates = [exactHash];
+  const trimmed = templateText.trim();
+  if (trimmed && trimmed !== templateText) {
+    candidates.push(hashTemplateText(trimmed));
+  }
+  return candidates;
+}
+
+function matchesCustomTemplateHash(templateText: string, targetHash: string) {
+  if (!targetHash.trim()) return false;
+  return getCustomTemplateHashCandidates(templateText).includes(targetHash.trim());
+}
+
 function readStoredCustomTemplateConfigs() {
   if (typeof window === "undefined") return {} as Record<string, StoredCustomTemplateConfig>;
   const raw = window.localStorage.getItem(CUSTOM_TEMPLATE_MAPPING_STORAGE_KEY);
@@ -588,16 +616,18 @@ function readStoredCustomTemplateConfigs() {
 }
 
 function loadCustomTemplateConfig(templateText: string) {
-  const hash = hashTemplateText(templateText.trim());
   const records = readStoredCustomTemplateConfigs();
-  const record = records[hash];
-  if (!record || typeof record !== "object") return null;
-  const mapping = sanitizeCustomTemplateMapping(record.mapping || {});
-  const gender: UsgGender = record.gender === "female" ? "female" : "male";
-  const profile = sanitizeTemplateProfile(record.profile || null, {
-    templateHash: hash
-  });
-  return { mapping, gender, profile };
+  for (const hash of getCustomTemplateHashCandidates(templateText)) {
+    const record = records[hash];
+    if (!record || typeof record !== "object") continue;
+    const mapping = sanitizeCustomTemplateMapping(record.mapping || {});
+    const gender: UsgGender = record.gender === "female" ? "female" : "male";
+    const profile = sanitizeTemplateProfile(record.profile || null, {
+      templateHash: hash
+    });
+    return { mapping, gender, profile };
+  }
+  return null;
 }
 
 function saveCustomTemplateConfig(params: {
@@ -608,9 +638,8 @@ function saveCustomTemplateConfig(params: {
 }) {
   if (typeof window === "undefined") return;
   const { templateText, mapping, gender, profile } = params;
-  const trimmedTemplate = templateText.trim();
-  if (!trimmedTemplate) return;
-  const hash = hashTemplateText(trimmedTemplate);
+  if (!hasMeaningfulCustomTemplateText(templateText)) return;
+  const hash = getCustomTemplateHash(templateText);
   const records = readStoredCustomTemplateConfigs();
   records[hash] = {
     mapping: sanitizeCustomTemplateMapping(mapping),
@@ -635,7 +664,7 @@ function recordUnmappedFindingsLearning(params: {
 }) {
   if (typeof window === "undefined") return;
   const { templateText, findings } = params;
-  const templateHash = hashTemplateText(templateText.trim());
+  const templateHash = getCustomTemplateHash(templateText);
   if (!templateHash || !findings.length) return;
 
   let store: Record<string, Record<string, number>> = {};
@@ -668,8 +697,6 @@ function recordUnmappedFindingsLearning(params: {
 
 function readUnmappedFindingsLearning(templateText: string) {
   if (typeof window === "undefined") return [] as Array<{ finding: string; count: number }>;
-  const templateHash = hashTemplateText(templateText.trim());
-  if (!templateHash) return [] as Array<{ finding: string; count: number }>;
   try {
     const raw = window.localStorage.getItem(TEMPLATE_PROFILE_LEARNING_STORAGE_KEY);
     if (!raw) return [] as Array<{ finding: string; count: number }>;
@@ -677,19 +704,22 @@ function readUnmappedFindingsLearning(templateText: string) {
     if (!parsed || typeof parsed !== "object") {
       return [] as Array<{ finding: string; count: number }>;
     }
-    const templateStore = (parsed as Record<string, unknown>)[templateHash];
-    if (!templateStore || typeof templateStore !== "object") {
-      return [] as Array<{ finding: string; count: number }>;
+    for (const templateHash of getCustomTemplateHashCandidates(templateText)) {
+      const templateStore = (parsed as Record<string, unknown>)[templateHash];
+      if (!templateStore || typeof templateStore !== "object") {
+        continue;
+      }
+      const pairs = Object.entries(templateStore as Record<string, unknown>)
+        .map(([finding, count]) => ({
+          finding,
+          count: typeof count === "number" ? count : 0
+        }))
+        .filter((item) => item.count > 0)
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 8);
+      return pairs;
     }
-    const pairs = Object.entries(templateStore as Record<string, unknown>)
-      .map(([finding, count]) => ({
-        finding,
-        count: typeof count === "number" ? count : 0
-      }))
-      .filter((item) => item.count > 0)
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 8);
-    return pairs;
+    return [] as Array<{ finding: string; count: number }>;
   } catch {
     return [] as Array<{ finding: string; count: number }>;
   }
@@ -949,6 +979,16 @@ function buildAdminDiffRows(aiText: string, finalText: string) {
   return rows;
 }
 
+function getStoredGeneratedReportText(data: Record<string, unknown>) {
+  const rawJsonBaseline = extractGeneratedObservationsFromRawJson(
+    String(data.rawJson || "")
+  );
+  if (rawJsonBaseline) {
+    return rawJsonBaseline;
+  }
+  return String(data.aiGeneratedObservationsText || "").trim();
+}
+
 function adminDiffCellTone(
   rowKind: AdminDiffRow["kind"],
   side: "left" | "right"
@@ -1042,6 +1082,7 @@ export default function Home() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [processingTopicProgress, setProcessingTopicProgress] = useState(0);
   const [observations, setObservations] = useState("");
+  const [editorFontSizePx, setEditorFontSizePx] = useState(DEFAULT_EDITOR_FONT_SIZE_PX);
   const [flags, setFlags] = useState<string[]>([]);
   const [disclaimer, setDisclaimer] = useState("");
   const [rawJson, setRawJson] = useState("");
@@ -1073,6 +1114,7 @@ export default function Home() {
   const [worklistStatusFilter, setWorklistStatusFilter] = useState<
     "all" | ReportStatus
   >("all");
+  const [isWorklistExpanded, setIsWorklistExpanded] = useState(false);
   const [isQuickTemplatesExpanded, setIsQuickTemplatesExpanded] = useState(false);
   const [isManageTemplatesOpen, setIsManageTemplatesOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -1130,7 +1172,7 @@ export default function Home() {
   const isCustomTemplateMode = isCustomUsgTemplate(templateId);
   const customHeadingCandidates = useMemo(
     () =>
-      customTemplateText.trim()
+      hasMeaningfulCustomTemplateText(customTemplateText)
         ? detectHeadingCandidates(customTemplateText)
         : [],
     [customTemplateText]
@@ -1147,7 +1189,7 @@ export default function Home() {
   }, [customHeadingCandidates]);
   const customLearningSuggestions = useMemo(
     () =>
-      customTemplateText.trim()
+      hasMeaningfulCustomTemplateText(customTemplateText)
         ? readUnmappedFindingsLearning(customTemplateText)
         : [],
     [customTemplateText, rawJson]
@@ -1175,6 +1217,15 @@ export default function Home() {
     if (worklistStatusFilter === "all") return searchedReports;
     return searchedReports.filter((item) => item.status === worklistStatusFilter);
   }, [searchedReports, worklistStatusFilter]);
+  const visibleWorklistReports = useMemo(
+    () =>
+      isWorklistExpanded
+        ? filteredReports
+        : filteredReports.slice(0, DEFAULT_WORKLIST_VISIBLE_COUNT),
+    [filteredReports, isWorklistExpanded]
+  );
+  const hasMoreWorklistReports =
+    filteredReports.length > DEFAULT_WORKLIST_VISIBLE_COUNT;
   const worklistCounts = useMemo(() => {
     const draft = reports.filter((item) => item.status === "draft").length;
     const pending = reports.filter((item) => item.status === "pending_review").length;
@@ -1255,6 +1306,10 @@ export default function Home() {
   const selectedAdminIssueSummary = selectedAdminIssue
     ? issueSummaries[selectedAdminIssue.issueId] || null
     : null;
+
+  useEffect(() => {
+    setIsWorklistExpanded(false);
+  }, [searchQuery, worklistStatusFilter]);
   const adminIssueCount = adminIssues.length;
   const visibleQuickTemplates = isQuickTemplatesExpanded
     ? quickTemplates
@@ -1554,7 +1609,7 @@ export default function Home() {
             statusRaw === "discarded"
               ? statusRaw
               : "draft";
-          const aiText = String(data.aiGeneratedObservationsText || "").trim();
+          const aiText = getStoredGeneratedReportText(data);
           const finalText = String(data.observationsText || "").trim();
           const hasComparableAiBaseline = aiText.length > 0;
           const hasStoredEditFlag = typeof data.hasObservationEdits === "boolean";
@@ -1624,7 +1679,7 @@ export default function Home() {
           const templateText = String(data.templateText || "");
           const templateHash =
             String(data.templateHash || "").trim() ||
-            hashTemplateText(templateText.trim());
+            getCustomTemplateHash(templateText);
           const mapping = sanitizeCustomTemplateMapping(data.mapping || {});
           const profile = sanitizeTemplateProfile(data.profile || null, {
             templateHash
@@ -1707,30 +1762,33 @@ export default function Home() {
   ]);
 
   useEffect(() => {
-    if (!isCustomTemplateMode || !customTemplateText.trim()) {
+    if (!isCustomTemplateMode || !hasMeaningfulCustomTemplateText(customTemplateText)) {
       return;
     }
     let cancelled = false;
     const run = async () => {
-      const templateHash = hashTemplateText(customTemplateText.trim());
+      const [templateHash, legacyTemplateHash] =
+        getCustomTemplateHashCandidates(customTemplateText);
       let stored = loadCustomTemplateConfig(customTemplateText);
 
       if (firebaseClient && currentUser && templateHash) {
         try {
-          const cloudRef = doc(
-            firebaseClient.db,
-            `users/${currentUser.uid}/customTemplates/${templateHash}`
-          );
-          const cloudSnap = await getDoc(cloudRef);
-          if (cloudSnap.exists()) {
+          for (const candidateHash of [templateHash, legacyTemplateHash].filter(Boolean)) {
+            const cloudRef = doc(
+              firebaseClient.db,
+              `users/${currentUser.uid}/customTemplates/${candidateHash}`
+            );
+            const cloudSnap = await getDoc(cloudRef);
+            if (!cloudSnap.exists()) continue;
             const cloudData = cloudSnap.data() as Record<string, unknown>;
             stored = {
               mapping: sanitizeCustomTemplateMapping(cloudData.mapping || {}),
               gender: cloudData.gender === "female" ? "female" : "male",
               profile: sanitizeTemplateProfile(cloudData.profile || null, {
-                templateHash
+                templateHash: candidateHash
               })
             };
+            break;
           }
         } catch (cloudError) {
           setError(firebaseErrorMessage(cloudError));
@@ -1780,10 +1838,11 @@ export default function Home() {
   ]);
 
   useEffect(() => {
-    if (!isCustomTemplateMode || !customTemplateText.trim()) return;
-    const templateHash = hashTemplateText(customTemplateText.trim());
+    if (!isCustomTemplateMode || !hasMeaningfulCustomTemplateText(customTemplateText)) return;
     const matched = savedCustomTemplates.find(
-      (item) => item.id === activeCustomTemplateId || item.templateHash === templateHash
+      (item) =>
+        item.id === activeCustomTemplateId ||
+        matchesCustomTemplateHash(customTemplateText, item.templateHash)
     );
     if (!matched) return;
     if (!activeCustomTemplateId) {
@@ -1801,7 +1860,7 @@ export default function Home() {
   ]);
 
   useEffect(() => {
-    if (!isCustomTemplateMode || !customTemplateText.trim()) {
+    if (!isCustomTemplateMode || !hasMeaningfulCustomTemplateText(customTemplateText)) {
       return;
     }
     saveCustomTemplateConfig({
@@ -1819,7 +1878,7 @@ export default function Home() {
     }
     customTemplateSaveTimerRef.current = window.setTimeout(async () => {
       try {
-        const templateHash = hashTemplateText(customTemplateText.trim());
+        const templateHash = getCustomTemplateHash(customTemplateText);
         if (!templateHash) return;
         await setDoc(
           doc(
@@ -1827,7 +1886,7 @@ export default function Home() {
             `users/${currentUser.uid}/customTemplates/${templateHash}`
           ),
           {
-            templateText: customTemplateText.trim(),
+            templateText: customTemplateText,
             mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
             gender: customTemplateGender,
             profile: sanitizeTemplateProfile(customTemplateProfile || null, {
@@ -1868,7 +1927,7 @@ export default function Home() {
   };
 
   const handleLoadSavedCustomTemplate = (record: SavedCustomTemplate) => {
-    if (!record.templateText.trim()) {
+    if (!hasMeaningfulCustomTemplateText(record.templateText)) {
       setError("Selected saved custom template is empty.");
       return;
     }
@@ -1890,11 +1949,11 @@ export default function Home() {
       setError("Sign in to save custom templates.");
       return;
     }
-    if (!customTemplateText.trim()) {
+    if (!hasMeaningfulCustomTemplateText(customTemplateText)) {
       setError("Paste or upload template text before saving.");
       return;
     }
-    const templateHash = hashTemplateText(customTemplateText.trim());
+    const templateHash = getCustomTemplateHash(customTemplateText);
     const normalizedProfile = sanitizeTemplateProfile(customTemplateProfile || null, {
       templateHash
     });
@@ -1913,7 +1972,7 @@ export default function Home() {
         ),
         {
           name,
-          templateText: customTemplateText.trim(),
+          templateText: customTemplateText,
           templateHash,
           gender: customTemplateGender,
           mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
@@ -1976,7 +2035,7 @@ export default function Home() {
 
   const applyCustomTemplateProfileDraft = () => {
     const sanitized = sanitizeTemplateProfile(customTemplateProfileDraft, {
-      templateHash: hashTemplateText(customTemplateText.trim())
+      templateHash: getCustomTemplateHash(customTemplateText)
     });
     if (!sanitized) {
       setError("Profile JSON is invalid. Please review and try again.");
@@ -1989,7 +2048,7 @@ export default function Home() {
   };
 
   const handleAnalyzeTemplateProfile = async () => {
-    if (!customTemplateText.trim()) {
+    if (!hasMeaningfulCustomTemplateText(customTemplateText)) {
       setError("Paste or upload custom template text before AI analysis.");
       return;
     }
@@ -2013,7 +2072,7 @@ export default function Home() {
         throw new Error(payload?.error || "Template intelligence failed.");
       }
       const sanitized = sanitizeTemplateProfile(payload?.profile || null, {
-        templateHash: hashTemplateText(customTemplateText.trim())
+        templateHash: getCustomTemplateHash(customTemplateText)
       });
       if (!sanitized) {
         throw new Error("AI returned an invalid template profile.");
@@ -2035,7 +2094,7 @@ export default function Home() {
   const setProfileApproved = (approved: boolean) => {
     const parsed =
       sanitizeTemplateProfile(customTemplateProfileDraft, {
-        templateHash: hashTemplateText(customTemplateText.trim())
+        templateHash: getCustomTemplateHash(customTemplateText)
       }) || customTemplateProfile;
     if (!parsed) {
       setError("Create or apply a valid template profile before approval.");
@@ -2046,7 +2105,7 @@ export default function Home() {
       approved
     };
     const sanitized = sanitizeTemplateProfile(nextProfile, {
-      templateHash: hashTemplateText(customTemplateText.trim())
+      templateHash: getCustomTemplateHash(customTemplateText)
     });
     if (!sanitized) {
       setError("Unable to update profile approval state.");
@@ -2436,10 +2495,13 @@ export default function Home() {
       }
     }
 
-    if (report.templateId === CUSTOM_TEMPLATE_ID && report.customTemplateText.trim()) {
-      const templateHash = hashTemplateText(report.customTemplateText.trim());
+    if (
+      report.templateId === CUSTOM_TEMPLATE_ID &&
+      hasMeaningfulCustomTemplateText(report.customTemplateText)
+    ) {
+      const templateHash = getCustomTemplateHash(report.customTemplateText);
       const linkedSavedTemplate = savedCustomTemplates.find(
-        (item) => item.templateHash === templateHash
+        (item) => matchesCustomTemplateHash(report.customTemplateText, item.templateHash)
       );
       setActiveCustomTemplateId(linkedSavedTemplate?.id || "");
       setCustomTemplateLabel(linkedSavedTemplate?.name || "");
@@ -2533,16 +2595,18 @@ export default function Home() {
       const existingGeneratedAtMs = parseTimestampToMillis(existingData?.generatedAt);
       const resolvedGeneratedAtMs =
         activeReport?.generatedAtMs || existingGeneratedAtMs || Date.now();
-      const existingAiGeneratedObservationsText = String(
-        activeReport?.aiGeneratedObservationsText ||
-          existingData?.aiGeneratedObservationsText ||
-          ""
-      ).trim();
+      const existingAiGeneratedObservationsText =
+        String(
+          activeReport?.aiGeneratedObservationsText ||
+            extractGeneratedObservationsFromRawJson(String(existingData?.rawJson || "")) ||
+            existingData?.aiGeneratedObservationsText ||
+            ""
+        ) || "";
       const aiGeneratedObservationsText =
         params.status === "pending_review"
-          ? extractObservationCoreText(params.observationsText)
+          ? params.observationsText
           : existingAiGeneratedObservationsText ||
-            extractObservationCoreText(params.observationsText);
+            params.observationsText;
       const editStats = computeObservationEditStats(
         aiGeneratedObservationsText,
         params.observationsText
@@ -2597,14 +2661,16 @@ export default function Home() {
         { merge: true }
       );
 
-      if (isCustomTemplateMode && customTemplateText.trim()) {
-        const templateHash = hashTemplateText(customTemplateText.trim());
+      if (isCustomTemplateMode && hasMeaningfulCustomTemplateText(customTemplateText)) {
+        const templateHash = getCustomTemplateHash(customTemplateText);
         const normalizedProfile = sanitizeTemplateProfile(customTemplateProfile || null, {
           templateHash
         });
         const autoTemplateId = activeCustomTemplateId || templateHash;
         const existingSaved = savedCustomTemplates.find(
-          (item) => item.id === autoTemplateId || item.templateHash === templateHash
+          (item) =>
+            item.id === autoTemplateId ||
+            matchesCustomTemplateHash(customTemplateText, item.templateHash)
         );
         const resolvedTemplateId = existingSaved?.id || autoTemplateId;
         const resolvedName =
@@ -2618,7 +2684,7 @@ export default function Home() {
           ),
           {
             name: resolvedName,
-            templateText: customTemplateText.trim(),
+            templateText: customTemplateText,
             templateHash,
             gender: customTemplateGender,
             mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
@@ -2722,7 +2788,7 @@ export default function Home() {
       setError("Generation is disabled on this static site. Configure NEXT_PUBLIC_API_BASE_URL.");
       return;
     }
-    if (isCustomTemplateMode && !customTemplateText.trim()) {
+    if (isCustomTemplateMode && !hasMeaningfulCustomTemplateText(customTemplateText)) {
       setError("Add custom template text before generating.");
       return;
     }
@@ -3071,6 +3137,15 @@ export default function Home() {
     applyEditorFormatting("underline");
   };
 
+  const adjustEditorFontSize = (delta: number) => {
+    setEditorFontSizePx((current) =>
+      Math.min(
+        MAX_EDITOR_FONT_SIZE_PX,
+        Math.max(MIN_EDITOR_FONT_SIZE_PX, current + delta)
+      )
+    );
+  };
+
   const toggleAbnormalFormatting = () => {
     const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
     if (!activeEditor) return;
@@ -3087,7 +3162,8 @@ export default function Home() {
     setObservations(activeEditor.innerHTML);
   };
 
-  const customTemplateReady = !isCustomTemplateMode || Boolean(customTemplateText.trim());
+  const customTemplateReady =
+    !isCustomTemplateMode || hasMeaningfulCustomTemplateText(customTemplateText);
   const customTemplateProfileReady =
     !isCustomTemplateMode || Boolean(customTemplateProfile?.approved);
   const canGoRecording =
@@ -3709,7 +3785,10 @@ export default function Home() {
                     <button
                       onClick={handleAnalyzeTemplateProfile}
                       className="rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-white hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
-                      disabled={isAnalyzingTemplateProfile || !customTemplateText.trim()}
+                      disabled={
+                        isAnalyzingTemplateProfile ||
+                        !hasMeaningfulCustomTemplateText(customTemplateText)
+                      }
                       type="button"
                     >
                       {isAnalyzingTemplateProfile
@@ -3872,7 +3951,7 @@ export default function Home() {
                         </td>
                       </tr>
                     )}
-                    {filteredReports.slice(0, 30).map((item) => (
+                    {visibleWorklistReports.map((item) => (
                       <tr key={item.id} className="group transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/30">
                         <td className="px-6 py-4">
                           <span
@@ -3922,7 +4001,7 @@ export default function Home() {
                     No reports saved yet.
                   </div>
                 )}
-                {filteredReports.slice(0, 10).map((item) => (
+                {visibleWorklistReports.map((item) => (
                   <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                     <div className="mb-2 flex items-center justify-between">
                       <span
@@ -3951,6 +4030,17 @@ export default function Home() {
                   </div>
                 ))}
               </div>
+              {hasMoreWorklistReports && (
+                <div className="mt-4 flex justify-center">
+                  <button
+                    type="button"
+                    onClick={() => setIsWorklistExpanded((current) => !current)}
+                    className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  >
+                    {isWorklistExpanded ? "Show less" : `See more (${filteredReports.length - DEFAULT_WORKLIST_VISIBLE_COUNT} more)`}
+                  </button>
+                </div>
+              )}
             </section>
           </div>
         </main>
@@ -5226,6 +5316,25 @@ export default function Home() {
                     <span className="material-icons-round text-lg">format_underlined</span>
                   </button>
                   <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={() => adjustEditorFontSize(-1)}
+                    disabled={editorFontSizePx <= MIN_EDITOR_FONT_SIZE_PX}
+                    title="Decrease font size"
+                  >
+                    <span className="material-icons-round text-lg">text_decrease</span>
+                  </button>
+                  <span className="min-w-[3.25rem] px-1 text-center text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                    {editorFontSizePx}px
+                  </span>
+                  <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={() => adjustEditorFontSize(1)}
+                    disabled={editorFontSizePx >= MAX_EDITOR_FONT_SIZE_PX}
+                    title="Increase font size"
+                  >
+                    <span className="material-icons-round text-lg">text_increase</span>
+                  </button>
+                  <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
                     onClick={handleCopy}
                     disabled={!hasObservations}
@@ -5283,6 +5392,7 @@ export default function Home() {
                   disabled={isGenerating}
                   ref={editorRef}
                   className="report-editor viewport"
+                  style={{ fontSize: `${editorFontSizePx}px` }}
                 />
               </div>
             </div>
@@ -5491,6 +5601,7 @@ export default function Home() {
                 disabled={isGenerating}
                 ref={fullscreenEditorRef}
                 className="report-editor full mobile-full"
+                style={{ fontSize: `${editorFontSizePx}px` }}
               />
             </div>
           </div>

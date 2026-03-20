@@ -8,6 +8,7 @@ type EditorProps = {
   placeholder?: string;
   disabled?: boolean;
   className?: string;
+  style?: React.CSSProperties;
 };
 
 function htmlToText(html: string) {
@@ -32,7 +33,7 @@ function assignRef<T>(
 }
 
 const Editor = React.forwardRef<HTMLDivElement, EditorProps>(function Editor(
-  { value, onChange, placeholder, disabled = false, className },
+  { value, onChange, placeholder, disabled = false, className, style },
   ref
 ) {
   const innerRef = useRef<HTMLDivElement | null>(null);
@@ -71,6 +72,7 @@ const Editor = React.forwardRef<HTMLDivElement, EditorProps>(function Editor(
         role="textbox"
         aria-multiline="true"
         aria-disabled={disabled}
+        style={style}
         onInput={handleInput}
         onBlur={handleInput}
       />
