@@ -1,7 +1,7 @@
 "use client";
 
 import { jsPDF } from "jspdf";
-import { htmlToLines, type TextSegment } from "@/lib/richText";
+import { htmlToLines, type TextAlignment, type TextSegment } from "@/lib/richText";
 
 type Token = {
   text: string;
@@ -51,9 +51,18 @@ export function exportPdf(fileName: string, html: string) {
     }
   };
 
-  const renderLine = (tokens: Token[]) => {
+  const lineWidth = (tokens: Token[]) =>
+    tokens.reduce((sum, token) => sum + getTokenWidth(doc, token), 0);
+
+  const renderLine = (tokens: Token[], alignment: TextAlignment) => {
     ensurePage();
+    const totalWidth = lineWidth(tokens);
     let x = margin;
+    if (alignment === "center") {
+      x = margin + Math.max(0, (maxWidth - totalWidth) / 2);
+    } else if (alignment === "right") {
+      x = margin + Math.max(0, maxWidth - totalWidth);
+    }
     tokens.forEach((token) => {
       const width = getTokenWidth(doc, token);
       if (token.isWhitespace) {
@@ -71,9 +80,9 @@ export function exportPdf(fileName: string, html: string) {
     y += LINE_HEIGHT;
   };
 
-  lines.forEach((lineSegments) => {
-    if (!lineSegments.length) {
-      renderLine([]);
+  lines.forEach((line) => {
+    if (!line.segments.length) {
+      renderLine([], line.alignment);
       return;
     }
 
@@ -81,12 +90,12 @@ export function exportPdf(fileName: string, html: string) {
     let currentWidth = 0;
 
     const flushLine = () => {
-      renderLine(currentTokens);
+      renderLine(currentTokens, line.alignment);
       currentTokens = [];
       currentWidth = 0;
     };
 
-    lineSegments.forEach((segment) => {
+    line.segments.forEach((segment) => {
       const tokens = segmentToTokens(segment);
       tokens.forEach((token) => {
         const width = getTokenWidth(doc, token);
@@ -107,7 +116,7 @@ export function exportPdf(fileName: string, html: string) {
       });
     });
 
-    renderLine(currentTokens);
+    renderLine(currentTokens, line.alignment);
   });
 
   doc.save(fileName);

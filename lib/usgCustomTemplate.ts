@@ -585,35 +585,82 @@ function splitReplacementLines(text: string, preferMultipleLines: boolean) {
     .filter(Boolean);
 }
 
-function applyExistingLineStyle(existingBodyLines: string[], replacementText: string) {
-  const nonEmptySample = existingBodyLines.find((line) => line.trim());
-  const preferMultipleLines = existingBodyLines.filter((line) => line.trim()).length > 1;
-  const replacementLines = splitReplacementLines(replacementText, preferMultipleLines);
-  if (!replacementLines.length) return [];
-
-  if (!nonEmptySample) {
-    return replacementLines;
+function distributeReplacementLines(lines: string[], slotCount: number) {
+  if (slotCount <= 1) {
+    return [lines.join(" ").trim()];
+  }
+  if (lines.length === slotCount) {
+    return lines;
+  }
+  if (lines.length < slotCount) {
+    return [...lines, ...Array.from({ length: slotCount - lines.length }, () => "")];
   }
 
-  const bulletMatch = nonEmptySample.match(/^(\s*)([-*•]\s+).*/);
+  const distributed: string[] = [];
+  let cursor = 0;
+  for (let slotIndex = 0; slotIndex < slotCount; slotIndex += 1) {
+    const remainingLines = lines.length - cursor;
+    const remainingSlots = slotCount - slotIndex;
+    const takeCount = Math.ceil(remainingLines / remainingSlots);
+    distributed.push(lines.slice(cursor, cursor + takeCount).join(" ").trim());
+    cursor += takeCount;
+  }
+  return distributed;
+}
+
+function applyLineTemplate(existingLine: string, replacementText: string) {
+  if (!replacementText.trim()) {
+    return existingLine.trim() ? existingLine.match(/^(\s*)/)?.[1] || "" : existingLine;
+  }
+
+  const bulletMatch = existingLine.match(/^(\s*[-*•]\s+).*/);
   if (bulletMatch) {
-    const [, indent, marker] = bulletMatch;
-    return replacementLines.map((line) => `${indent}${marker}${line}`);
+    return `${bulletMatch[1]}${replacementText}`;
   }
 
-  const numberedMatch = nonEmptySample.match(/^(\s*)(\d+)([.)]\s+).*/);
+  const numberedMatch = existingLine.match(/^(\s*\d+[.)]\s+).*/);
   if (numberedMatch) {
-    const [, indent, start, suffix] = numberedMatch;
-    const startNumber = parseInt(start, 10);
-    const safeStart = Number.isFinite(startNumber) ? startNumber : 1;
-    return replacementLines.map(
-      (line, index) => `${indent}${safeStart + index}${suffix}${line}`
-    );
+    return `${numberedMatch[1]}${replacementText}`;
   }
 
-  const indentMatch = nonEmptySample.match(/^(\s*).*/);
+  const indentMatch = existingLine.match(/^(\s*).*/);
   const indent = indentMatch ? indentMatch[1] : "";
-  return replacementLines.map((line) => `${indent}${line}`);
+  return `${indent}${replacementText}`;
+}
+
+function preserveExistingBodyLayout(
+  existingBodyLines: string[],
+  replacementText: string
+) {
+  const nonEmptyIndexes = existingBodyLines
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => entry.line.trim())
+    .map((entry) => entry.index);
+
+  if (!nonEmptyIndexes.length) {
+    const replacementLines = splitReplacementLines(replacementText, false);
+    return replacementLines.length ? replacementLines : [...existingBodyLines];
+  }
+
+  const preferMultipleLines = nonEmptyIndexes.length > 1;
+  const replacementLines = splitReplacementLines(replacementText, preferMultipleLines);
+  const fittedLines = distributeReplacementLines(replacementLines, nonEmptyIndexes.length);
+  const output = [...existingBodyLines];
+
+  nonEmptyIndexes.forEach((lineIndex, slotIndex) => {
+    output[lineIndex] = applyLineTemplate(
+      existingBodyLines[lineIndex],
+      fittedLines[slotIndex] || ""
+    );
+  });
+
+  return output;
+}
+
+function clearExistingBodyLayout(existingBodyLines: string[]) {
+  return existingBodyLines.map((line) =>
+    line.trim() ? line.match(/^(\s*)/)?.[1] || "" : line
+  );
 }
 
 function isPlaceholderValue(text: string) {
@@ -804,8 +851,8 @@ export function renderCustomTemplateDeterministically(params: {
 
     const existingBodyLines = output.slice(start, end);
     const replacementLines = shouldForceClear
-      ? []
-      : applyExistingLineStyle(existingBodyLines, replacementText);
+      ? clearExistingBodyLayout(existingBodyLines)
+      : preserveExistingBodyLayout(existingBodyLines, replacementText);
 
     if (!shouldForceClear && !replacementLines.length) {
       continue;

@@ -1,17 +1,31 @@
 "use client";
 
-import { Document, Packer, Paragraph, TextRun, UnderlineType } from "docx";
+import {
+  AlignmentType,
+  Document,
+  Packer,
+  Paragraph,
+  TextRun,
+  UnderlineType
+} from "docx";
 import { htmlToLines } from "@/lib/richText";
+
+function paragraphAlignment(alignment: "left" | "center" | "right") {
+  if (alignment === "center") return AlignmentType.CENTER;
+  if (alignment === "right") return AlignmentType.RIGHT;
+  return AlignmentType.LEFT;
+}
 
 export async function exportDocx(fileName: string, html: string) {
   const lines = htmlToLines(html || "");
   const paragraphs = lines.length
-    ? lines.map((lineSegments) => {
-        if (!lineSegments.length) {
+    ? lines.map((line) => {
+        if (!line.segments.length) {
           return new Paragraph("");
         }
         return new Paragraph({
-          children: lineSegments.map(
+          alignment: paragraphAlignment(line.alignment),
+          children: line.segments.map(
             (segment) =>
               new TextRun({
                 text: segment.text,

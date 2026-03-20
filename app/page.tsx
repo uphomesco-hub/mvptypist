@@ -3121,7 +3121,14 @@ export default function Home() {
     }
   };
 
-  const applyEditorFormatting = (command: "bold" | "underline") => {
+  const applyEditorFormatting = (
+    command:
+      | "bold"
+      | "underline"
+      | "justifyLeft"
+      | "justifyCenter"
+      | "justifyRight"
+  ) => {
     const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
     if (!activeEditor) return;
     activeEditor.focus();
@@ -3135,6 +3142,18 @@ export default function Home() {
 
   const toggleUnderlineFormatting = () => {
     applyEditorFormatting("underline");
+  };
+
+  const alignEditorText = (alignment: "left" | "center" | "right") => {
+    if (alignment === "center") {
+      applyEditorFormatting("justifyCenter");
+      return;
+    }
+    if (alignment === "right") {
+      applyEditorFormatting("justifyRight");
+      return;
+    }
+    applyEditorFormatting("justifyLeft");
   };
 
   const adjustEditorFontSize = (delta: number) => {
@@ -5333,6 +5352,30 @@ export default function Home() {
                     title="Increase font size"
                   >
                     <span className="material-icons-round text-lg">text_increase</span>
+                  </button>
+                  <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={() => alignEditorText("left")}
+                    disabled={!hasObservations}
+                    title="Align left"
+                  >
+                    <span className="material-icons-round text-lg">format_align_left</span>
+                  </button>
+                  <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={() => alignEditorText("center")}
+                    disabled={!hasObservations}
+                    title="Align center"
+                  >
+                    <span className="material-icons-round text-lg">format_align_center</span>
+                  </button>
+                  <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={() => alignEditorText("right")}
+                    disabled={!hasObservations}
+                    title="Align right"
+                  >
+                    <span className="material-icons-round text-lg">format_align_right</span>
                   </button>
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"

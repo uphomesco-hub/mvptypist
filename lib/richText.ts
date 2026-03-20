@@ -4,11 +4,20 @@ export type TextSegment = {
   text: string;
   bold: boolean;
   underline: boolean;
+  alignment: TextAlignment;
+};
+
+export type TextAlignment = "left" | "center" | "right";
+
+export type TextLine = {
+  segments: TextSegment[];
+  alignment: TextAlignment;
 };
 
 type TextStyle = {
   bold: boolean;
   underline: boolean;
+  alignment: TextAlignment;
 };
 
 const BLOCK_TAGS = new Set(["DIV", "P", "LI", "TR"]);
@@ -16,8 +25,26 @@ const BLOCK_TAGS = new Set(["DIV", "P", "LI", "TR"]);
 function mergeStyle(base: TextStyle, overrides: Partial<TextStyle>) {
   return {
     bold: overrides.bold ?? base.bold,
-    underline: overrides.underline ?? base.underline
+    underline: overrides.underline ?? base.underline,
+    alignment: overrides.alignment ?? base.alignment
   };
+}
+
+function getAlignmentFromElement(element: HTMLElement): TextAlignment | null {
+  const inlineStyle = element.getAttribute("style") || "";
+  const alignAttr = (element.getAttribute("align") || "").trim().toLowerCase();
+
+  if (/text-align\s*:\s*center/i.test(inlineStyle) || alignAttr === "center") {
+    return "center";
+  }
+  if (/text-align\s*:\s*right/i.test(inlineStyle) || alignAttr === "right") {
+    return "right";
+  }
+  if (/text-align\s*:\s*left/i.test(inlineStyle) || alignAttr === "left") {
+    return "left";
+  }
+
+  return null;
 }
 
 function styleFromElement(
@@ -42,6 +69,11 @@ function styleFromElement(
     if (/text-decoration\s*:\s*underline/i.test(style)) {
       next = mergeStyle(next, { underline: true });
     }
+  }
+
+  const alignment = getAlignmentFromElement(element);
+  if (alignment) {
+    next = mergeStyle(next, { alignment });
   }
 
   return next;
@@ -91,27 +123,32 @@ export function htmlToLines(html: string) {
   const segments: TextSegment[] = [];
 
   document.body.childNodes.forEach((node) =>
-    walkNodes(node, { bold: false, underline: false }, segments)
+    walkNodes(node, { bold: false, underline: false, alignment: "left" }, segments)
   );
 
-  const lines: TextSegment[][] = [[]];
+  const lines: TextLine[] = [{ segments: [], alignment: "left" }];
   segments.forEach((segment) => {
     const parts = segment.text.split(/\n/);
     parts.forEach((part, index) => {
       if (part) {
-        lines[lines.length - 1].push({
+        const currentLine = lines[lines.length - 1];
+        if (!currentLine.segments.length) {
+          currentLine.alignment = segment.alignment;
+        }
+        currentLine.segments.push({
           text: part,
           bold: segment.bold,
-          underline: segment.underline
+          underline: segment.underline,
+          alignment: segment.alignment
         });
       }
       if (index < parts.length - 1) {
-        lines.push([]);
+        lines.push({ segments: [], alignment: segment.alignment });
       }
     });
   });
 
-  while (lines.length > 1 && lines[lines.length - 1].length === 0) {
+  while (lines.length > 1 && lines[lines.length - 1].segments.length === 0) {
     lines.pop();
   }
 
