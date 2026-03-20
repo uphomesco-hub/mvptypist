@@ -3055,6 +3055,22 @@ export default function Home() {
     }
   };
 
+  const applyEditorFormatting = (command: "bold" | "underline") => {
+    const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
+    if (!activeEditor) return;
+    activeEditor.focus();
+    document.execCommand(command);
+    setObservations(activeEditor.innerHTML);
+  };
+
+  const toggleBoldFormatting = () => {
+    applyEditorFormatting("bold");
+  };
+
+  const toggleUnderlineFormatting = () => {
+    applyEditorFormatting("underline");
+  };
+
   const toggleAbnormalFormatting = () => {
     const activeEditor = isFullscreen ? fullscreenEditorRef.current : editorRef.current;
     if (!activeEditor) return;
@@ -5195,11 +5211,19 @@ export default function Home() {
                 <div className="flex items-center gap-1">
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
-                    onClick={toggleAbnormalFormatting}
+                    onClick={toggleBoldFormatting}
                     disabled={!hasObservations}
-                    title="Toggle bold + underline"
+                    title="Toggle bold"
                   >
                     <span className="material-icons-round text-lg">format_bold</span>
+                  </button>
+                  <button
+                    className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
+                    onClick={toggleUnderlineFormatting}
+                    disabled={!hasObservations}
+                    title="Toggle underline"
+                  >
+                    <span className="material-icons-round text-lg">format_underlined</span>
                   </button>
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
