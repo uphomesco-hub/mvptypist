@@ -150,16 +150,17 @@ async function callGeminiTemplateIntelligence(params: {
   apiKey: string;
   templateText: string;
   templateGender: string;
+  templateScope: "abdomen" | "kub";
   forceValidJson?: boolean;
 }) {
   const systemText =
     "You are a radiology template intelligence assistant. Output JSON only.";
 
-  const userText = `Analyze this USG whole abdomen report template and propose a deterministic profile for code-based filling.
+  const userText = `Analyze this ${params.templateScope === "kub" ? "USG KUB" : "USG whole abdomen"} report template and propose a deterministic profile for code-based filling.
 
 STRICT RULES:
 - Return JSON only. No markdown/code fences.
-- Include only USG whole abdomen clinically relevant sections/fields.
+- Include only ${params.templateScope === "kub" ? "USG KUB" : "USG whole abdomen"} clinically relevant sections/fields.
 - No admin/noise/chatter fields.
 - Prefer mapping to existing canonical keys where possible.
 - For new fields, create stable snake_case ids.
@@ -169,6 +170,7 @@ STRICT RULES:
 
 Input metadata:
 - template_gender: ${params.templateGender || "male"}
+- template_scope: ${params.templateScope}
 - canonical_field_ids: ${USG_FIELD_KEYS.join(", ")}
 - profile_version: ${TEMPLATE_PROFILE_VERSION}
 
@@ -264,11 +266,13 @@ export async function POST(request: NextRequest) {
 
   let templateText = "";
   let templateGender = "male";
+  let templateScope: "abdomen" | "kub" = "abdomen";
 
   try {
     const body = await request.json();
     templateText = String(body?.template_text || "").replace(/\r\n/g, "\n");
     templateGender = String(body?.template_gender || "male");
+    templateScope = body?.template_scope === "kub" ? "kub" : "abdomen";
   } catch {
     return NextResponse.json(
       { error: "Invalid request body." },
@@ -299,7 +303,8 @@ export async function POST(request: NextRequest) {
     rawText = await callGeminiTemplateIntelligence({
       apiKey,
       templateText,
-      templateGender
+      templateGender,
+      templateScope
     });
     parsed = parseModelJson(rawText) as Record<string, unknown> | null;
     if (!parsed) {
@@ -307,6 +312,7 @@ export async function POST(request: NextRequest) {
         apiKey,
         templateText,
         templateGender,
+        templateScope,
         forceValidJson: true
       });
       parsed = parseModelJson(rawText) as Record<string, unknown> | null;

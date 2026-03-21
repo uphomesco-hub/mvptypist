@@ -1,5 +1,6 @@
 import {
   buildUsgReport,
+  buildUsgKubReport,
   isHighRiskUsgOrganState,
   type UsgFieldOverrides,
   type UsgGender,
@@ -8,6 +9,7 @@ import {
 } from "@/lib/usgTemplate";
 
 export const CUSTOM_TEMPLATE_ID = "USG_ABDOMEN_CUSTOM";
+export const CUSTOM_KUB_TEMPLATE_ID = "USG_KUB_CUSTOM";
 export const CUSTOM_TEMPLATE_MAPPING_STORAGE_KEY =
   "mvptypist.customTemplateMappings.v1";
 
@@ -757,6 +759,7 @@ export function renderCustomTemplateDeterministically(params: {
   overrides: UsgFieldOverrides;
   gender: UsgGender;
   patient: UsgPatientInfo;
+  templateScope?: "abdomen" | "kub";
   suppressedFields?: (keyof UsgFieldOverrides)[];
   organStates?: UsgOrganStateMap;
 }): CustomRenderResult {
@@ -766,16 +769,25 @@ export function renderCustomTemplateDeterministically(params: {
     overrides,
     gender,
     patient,
+    templateScope = "abdomen",
     suppressedFields = [],
     organStates
   } = params;
 
-  const canonicalReport = buildUsgReport({
-    gender,
-    patient,
-    overrides,
-    suppressedFields
-  });
+  const canonicalReport =
+    templateScope === "kub"
+      ? buildUsgKubReport({
+          gender,
+          patient,
+          overrides,
+          suppressedFields
+        })
+      : buildUsgReport({
+          gender,
+          patient,
+          overrides,
+          suppressedFields
+        });
 
   const canonicalSections = extractCanonicalSectionValues(canonicalReport, gender);
   const withHeaderUpdates = applyDeterministicHeaderUpdates({

@@ -54,6 +54,7 @@ import {
 } from "@/lib/usgTemplate";
 import {
   CUSTOM_TEMPLATE_ID,
+  CUSTOM_KUB_TEMPLATE_ID,
   CUSTOM_TEMPLATE_MAPPING_STORAGE_KEY,
   CUSTOM_TEMPLATE_SECTION_KEYS,
   autoMapHeadingCandidates,
@@ -708,6 +709,7 @@ async function getAudioDuration(url: string) {
 }
 
 type StoredCustomTemplateConfig = {
+  templateId?: string;
   mapping: CustomTemplateMapping;
   gender: UsgGender;
   profile?: TemplateProfile | null;
@@ -720,6 +722,14 @@ function hasMeaningfulCustomTemplateText(templateText: string) {
 
 function getCustomTemplateHash(templateText: string) {
   return hashTemplateText(templateText);
+}
+
+function customTemplateStorageKey(templateId: string, templateText: string) {
+  return `${templateId}::${getCustomTemplateHash(templateText)}`;
+}
+
+function customTemplateStorageKeyFromHash(templateId: string, templateHash: string) {
+  return `${templateId}::${templateHash}`;
 }
 
 function getCustomTemplateHashCandidates(templateText: string) {
@@ -752,11 +762,14 @@ function readStoredCustomTemplateConfigs() {
   }
 }
 
-function loadCustomTemplateConfig(templateText: string) {
+function loadCustomTemplateConfig(templateId: string, templateText: string) {
   const records = readStoredCustomTemplateConfigs();
   for (const hash of getCustomTemplateHashCandidates(templateText)) {
-    const record = records[hash];
+    const record =
+      records[customTemplateStorageKeyFromHash(templateId, hash)] ||
+      records[hash];
     if (!record || typeof record !== "object") continue;
+    if (record.templateId && record.templateId !== templateId) continue;
     const mapping = sanitizeCustomTemplateMapping(record.mapping || {});
     const gender: UsgGender = record.gender === "female" ? "female" : "male";
     const profile = sanitizeTemplateProfile(record.profile || null, {
@@ -768,17 +781,19 @@ function loadCustomTemplateConfig(templateText: string) {
 }
 
 function saveCustomTemplateConfig(params: {
+  templateId: string;
   templateText: string;
   mapping: CustomTemplateMapping;
   gender: UsgGender;
   profile?: TemplateProfile | null;
 }) {
   if (typeof window === "undefined") return;
-  const { templateText, mapping, gender, profile } = params;
+  const { templateId, templateText, mapping, gender, profile } = params;
   if (!hasMeaningfulCustomTemplateText(templateText)) return;
   const hash = getCustomTemplateHash(templateText);
   const records = readStoredCustomTemplateConfigs();
-  records[hash] = {
+  records[customTemplateStorageKey(templateId, templateText)] = {
+    templateId,
     mapping: sanitizeCustomTemplateMapping(mapping),
     gender,
     profile: sanitizeTemplateProfile(profile || null, {
@@ -863,7 +878,7 @@ function readUnmappedFindingsLearning(templateText: string) {
 }
 
 function isCustomUsgTemplate(templateId: string) {
-  return templateId === CUSTOM_TEMPLATE_ID;
+  return templateId === CUSTOM_TEMPLATE_ID || templateId === CUSTOM_KUB_TEMPLATE_ID;
 }
 
 function labelForSectionKey(sectionKey: CustomTemplateSectionKey) {
@@ -885,6 +900,7 @@ type DoctorProfile = {
 type SavedCustomTemplate = {
   id: string;
   name: string;
+  templateId: string;
   templateText: string;
   gender: UsgGender;
   mapping: CustomTemplateMapping;
@@ -1321,6 +1337,16 @@ export default function Home() {
     [templateId]
   );
   const isCustomTemplateMode = isCustomUsgTemplate(templateId);
+  const activeCustomTemplateScopeId = isCustomTemplateMode ? templateId : "";
+  const filteredSavedCustomTemplates = useMemo(
+    () =>
+      savedCustomTemplates.filter((item) =>
+        activeCustomTemplateScopeId
+          ? (item.templateId || CUSTOM_TEMPLATE_ID) === activeCustomTemplateScopeId
+          : true
+      ),
+    [activeCustomTemplateScopeId, savedCustomTemplates]
+  );
   const customHeadingCandidates = useMemo(
     () =>
       hasMeaningfulCustomTemplateText(customTemplateText)
@@ -1965,6 +1991,7 @@ export default function Home() {
           const entry: SavedCustomTemplate = {
             id: docSnap.id,
             name: String(data.name || "").trim() || `Custom ${docSnap.id.slice(0, 6)}`,
+            templateId: String(data.templateId || CUSTOM_TEMPLATE_ID),
             templateText,
             gender: data.gender === "female" ? "female" : "male",
             mapping,
@@ -2047,11 +2074,16 @@ export default function Home() {
     const run = async () => {
       const [templateHash, legacyTemplateHash] =
         getCustomTemplateHashCandidates(customTemplateText);
-      let stored = loadCustomTemplateConfig(customTemplateText);
+      let stored = loadCustomTemplateConfig(templateId, customTemplateText);
 
       if (firebaseClient && currentUser && templateHash) {
         try {
-          for (const candidateHash of [templateHash, legacyTemplateHash].filter(Boolean)) {
+          const scopedHashes = [templateHash, legacyTemplateHash]
+            .filter(Boolean)
+            .map((candidateHash) =>
+              customTemplateStorageKeyFromHash(templateId, String(candidateHash))
+            );
+          for (const candidateHash of [...scopedHashes, templateHash, legacyTemplateHash].filter(Boolean)) {
             const cloudRef = doc(
               firebaseClient.db,
               `users/${currentUser.uid}/customTemplates/${candidateHash}`
@@ -2059,6 +2091,8 @@ export default function Home() {
             const cloudSnap = await getDoc(cloudRef);
             if (!cloudSnap.exists()) continue;
             const cloudData = cloudSnap.data() as Record<string, unknown>;
+            const cloudTemplateId = String(cloudData.templateId || "");
+            if (cloudTemplateId && cloudTemplateId !== templateId) continue;
             stored = {
               mapping: sanitizeCustomTemplateMapping(cloudData.mapping || {}),
               gender: cloudData.gender === "female" ? "female" : "male",
@@ -2108,6 +2142,7 @@ export default function Home() {
     };
   }, [
     isCustomTemplateMode,
+    templateId,
     customTemplateText,
     customHeadingCandidates,
     customHeadingOptions,
@@ -2119,8 +2154,9 @@ export default function Home() {
     if (!isCustomTemplateMode || !hasMeaningfulCustomTemplateText(customTemplateText)) return;
     const matched = savedCustomTemplates.find(
       (item) =>
-        item.id === activeCustomTemplateId ||
-        matchesCustomTemplateHash(customTemplateText, item.templateHash)
+        ((item.templateId || CUSTOM_TEMPLATE_ID) === templateId) &&
+        (item.id === activeCustomTemplateId ||
+          matchesCustomTemplateHash(customTemplateText, item.templateHash))
     );
     if (!matched) return;
     if (!activeCustomTemplateId) {
@@ -2131,6 +2167,7 @@ export default function Home() {
     }
   }, [
     isCustomTemplateMode,
+    templateId,
     customTemplateText,
     savedCustomTemplates,
     activeCustomTemplateId,
@@ -2142,6 +2179,7 @@ export default function Home() {
       return;
     }
     saveCustomTemplateConfig({
+      templateId,
       templateText: customTemplateText,
       mapping: customTemplateMapping,
       gender: customTemplateGender,
@@ -2158,12 +2196,14 @@ export default function Home() {
       try {
         const templateHash = getCustomTemplateHash(customTemplateText);
         if (!templateHash) return;
+        const cloudTemplateKey = customTemplateStorageKey(templateId, customTemplateText);
         await setDoc(
           doc(
             firebaseClient.db,
-            `users/${currentUser.uid}/customTemplates/${templateHash}`
+            `users/${currentUser.uid}/customTemplates/${cloudTemplateKey}`
           ),
           {
+            templateId,
             templateText: customTemplateText,
             mapping: sanitizeCustomTemplateMapping(customTemplateMapping),
             gender: customTemplateGender,
@@ -2187,6 +2227,7 @@ export default function Home() {
     };
   }, [
     isCustomTemplateMode,
+    templateId,
     customTemplateText,
     customTemplateMapping,
     customTemplateGender,
@@ -2209,7 +2250,7 @@ export default function Home() {
       setError("Selected saved custom template is empty.");
       return;
     }
-    setTemplateId(CUSTOM_TEMPLATE_ID);
+    setTemplateId(record.templateId || CUSTOM_TEMPLATE_ID);
     setActiveCustomTemplateId(record.id);
     setCustomTemplateLabel(record.name);
     setCustomTemplateGender(record.gender);
@@ -2250,6 +2291,7 @@ export default function Home() {
         ),
         {
           name,
+          templateId,
           templateText: customTemplateText,
           templateHash,
           gender: customTemplateGender,
@@ -2342,7 +2384,8 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           template_text: customTemplateText,
-          template_gender: customTemplateGender
+          template_gender: customTemplateGender,
+          template_scope: templateId === CUSTOM_KUB_TEMPLATE_ID ? "kub" : "abdomen"
         })
       });
       const payload = await response.json();
@@ -2412,6 +2455,8 @@ export default function Home() {
   const handleSelectTemplate = (nextTemplateId: string) => {
     setTemplateId(nextTemplateId);
     setActiveReportId("");
+    setActiveCustomTemplateId("");
+    setCustomTemplateLabel("");
     loadedCustomConfigHashRef.current = "";
     setObservations("");
     setRawJson("");
@@ -2826,16 +2871,16 @@ export default function Home() {
       }
     }
 
-    if (
-      report.templateId === CUSTOM_TEMPLATE_ID &&
-      hasMeaningfulCustomTemplateText(report.customTemplateText)
-    ) {
+    if (isCustomUsgTemplate(report.templateId) && hasMeaningfulCustomTemplateText(report.customTemplateText)) {
       const templateHash = getCustomTemplateHash(report.customTemplateText);
       const linkedSavedTemplate = savedCustomTemplates.find(
-        (item) => matchesCustomTemplateHash(report.customTemplateText, item.templateHash)
+        (item) =>
+          (item.templateId || CUSTOM_TEMPLATE_ID) === report.templateId &&
+          matchesCustomTemplateHash(report.customTemplateText, item.templateHash)
       );
       setActiveCustomTemplateId(linkedSavedTemplate?.id || "");
       setCustomTemplateLabel(linkedSavedTemplate?.name || "");
+      setTemplateId(report.templateId);
       setCustomTemplateText(report.customTemplateText);
       setCustomTemplateSource("firebase");
       setCustomTemplateGender(report.customTemplateGender || "male");
@@ -3000,8 +3045,10 @@ export default function Home() {
         const autoTemplateId = activeCustomTemplateId || templateHash;
         const existingSaved = savedCustomTemplates.find(
           (item) =>
-            item.id === autoTemplateId ||
-            matchesCustomTemplateHash(customTemplateText, item.templateHash)
+            (((item.templateId || CUSTOM_TEMPLATE_ID) === templateId &&
+              item.id === autoTemplateId) ||
+            ((item.templateId || CUSTOM_TEMPLATE_ID) === templateId &&
+              matchesCustomTemplateHash(customTemplateText, item.templateHash)))
         );
         const resolvedTemplateId = existingSaved?.id || autoTemplateId;
         const resolvedName =
@@ -3015,6 +3062,7 @@ export default function Home() {
           ),
           {
             name: resolvedName,
+            templateId,
             templateText: customTemplateText,
             templateHash,
             gender: customTemplateGender,
@@ -3986,7 +4034,7 @@ export default function Home() {
                     </p>
                   </div>
                   <span className="rounded bg-primary/10 px-3 py-1 text-xs font-bold uppercase tracking-wide text-primary">
-                    USG Custom
+                    {templateId === CUSTOM_KUB_TEMPLATE_ID ? "USG KUB Custom" : "USG Abdomen Custom"}
                   </span>
                 </div>
 
@@ -3996,7 +4044,11 @@ export default function Home() {
                     <input
                       value={customTemplateLabel}
                       onChange={(event) => setCustomTemplateLabel(event.target.value)}
-                      placeholder="e.g. Dr Yash - Abdomen v1"
+                      placeholder={
+                        templateId === CUSTOM_KUB_TEMPLATE_ID
+                          ? "e.g. Dr Yash - KUB v1"
+                          : "e.g. Dr Yash - Abdomen v1"
+                      }
                       className="mt-1 w-full rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-slate-700 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                     />
                   </label>
@@ -4007,7 +4059,7 @@ export default function Home() {
                       onChange={(event) => {
                         const nextId = event.target.value;
                         setActiveCustomTemplateId(nextId);
-                        const selected = savedCustomTemplates.find((item) => item.id === nextId);
+                        const selected = filteredSavedCustomTemplates.find((item) => item.id === nextId);
                         if (selected) {
                           handleLoadSavedCustomTemplate(selected);
                         }
@@ -4019,7 +4071,7 @@ export default function Home() {
                           ? "Loading..."
                           : "Select saved custom template"}
                       </option>
-                      {savedCustomTemplates.map((item) => (
+                      {filteredSavedCustomTemplates.map((item) => (
                         <option key={item.id} value={item.id}>
                           {item.name} ({item.useCount} uses)
                         </option>
@@ -5683,8 +5735,8 @@ export default function Home() {
             )}
 
             <div className="flex min-h-[56vh] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:min-h-0 md:flex-1 dark:border-slate-800 dark:bg-slate-900">
-              <div className="flex flex-wrap items-center justify-between border-b border-slate-200 bg-slate-50/50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50">
-                <div className="flex items-center gap-1">
+              <div className="flex flex-col gap-2 border-b border-slate-200 bg-slate-50/50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex min-w-0 items-center gap-1 overflow-x-auto pb-1 sm:pb-0 [&>*]:shrink-0">
                   <button
                     className="rounded p-1.5 text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-700"
                     onClick={toggleBoldFormatting}
@@ -5786,7 +5838,7 @@ export default function Home() {
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-end gap-2">
                   <span className="text-xs font-medium uppercase text-slate-500">AI Polish</span>
                   <button className="relative flex h-4 w-8 items-center rounded-full bg-primary">
                     <span className="absolute right-0.5 h-3 w-3 rounded-full bg-white" />

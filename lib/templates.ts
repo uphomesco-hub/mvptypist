@@ -213,6 +213,21 @@ export const templates: Template[] = [
     ]
   },
   {
+    id: "USG_KUB_CUSTOM",
+    title: "USG KUB (Custom)",
+    allowedTopics: [
+      "Custom heading mapping",
+      "Deterministic section fill",
+      "Kidneys / Bladder / Prostate / Uterus",
+      "Impression / Note"
+    ],
+    headings: [
+      "Custom Template Text",
+      "Heading Mapping",
+      "Deterministic Section Fill"
+    ]
+  },
+  {
     id: "DOPPLER_LOWER_LIMB",
     title: "Doppler Lower Limb",
     allowedTopics: [
