@@ -113,6 +113,7 @@ const SECTION_DEPENDENCIES: Record<
   ],
   BLADDER: [
     "bladder_main",
+    "bladder_wall_thickening",
     "bladder_mass_calculus",
     "bladder_prevoid_volume_cc",
     "bladder_postvoid_volume_cc"

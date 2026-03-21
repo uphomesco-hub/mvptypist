@@ -29,6 +29,7 @@ export type UsgFieldOverrides = {
   kidneys_parenchyma?: string;
   kidneys_calculus_hydronephrosis?: string;
   bladder_main?: string;
+  bladder_wall_thickening?: string;
   bladder_mass_calculus?: string;
   bladder_prevoid_volume_cc?: string;
   bladder_postvoid_volume_cc?: string;
@@ -103,6 +104,7 @@ const USG_DEFAULT_FIELDS_BASE: Required<UsgFieldOverrides> = {
   kidneys_calculus_hydronephrosis:
     "NO calculus, mass lesion or hydronephrosis seen.",
   bladder_main: "partially filled",
+  bladder_wall_thickening: "",
   bladder_mass_calculus: "",
   bladder_prevoid_volume_cc: "",
   bladder_postvoid_volume_cc: "",
@@ -124,6 +126,7 @@ const USG_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_BASE,
   kidneys_size: "",
   bladder_main: "partially filled",
+  bladder_wall_thickening: "",
   bladder_mass_calculus: "",
   ovaries_main: "",
   adnexal_mass: ""
@@ -137,6 +140,7 @@ const USG_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
   spleen_main: "is normal in size, shape & echotexture.",
   kidneys_size: "",
   bladder_main: "walls are well defined & normal in thickness.",
+  bladder_wall_thickening: "",
   bladder_mass_calculus:
     "There is no filling defect,calculus or foreign body in bladder.",
   prostate_main: "",
@@ -149,6 +153,7 @@ const USG_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
 
 const USG_KUB_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_MALE,
+  bladder_wall_thickening: "No abnormal wall thickening seen.",
   bladder_mass_calculus: "No internal echoes, mass, or calculus seen.",
   impression: "No significant abnormality seen in KUB study",
   correlate_clinically: "Please correlate clinically"
@@ -156,6 +161,7 @@ const USG_KUB_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
 
 const USG_KUB_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_FEMALE,
+  bladder_wall_thickening: "No abnormal wall thickening seen.",
   bladder_mass_calculus: "No internal echoes, mass, or calculus seen.",
   impression: "No significant abnormality seen in KUB study",
   correlate_clinically: "Please correlate clinically"
@@ -408,6 +414,7 @@ export function normalizeUsgOverridesForConsistency(params: {
       organ: "bladder",
       localText: collectText(normalizedOverrides, [
         "bladder_main",
+        "bladder_wall_thickening",
         "bladder_mass_calculus",
         "bladder_prevoid_volume_cc",
         "bladder_postvoid_volume_cc"
@@ -493,6 +500,7 @@ export function normalizeUsgOverridesForConsistency(params: {
     state: organStates.bladder,
     mainField: "bladder_main",
     detailFields: [
+      "bladder_wall_thickening",
       "bladder_mass_calculus",
       "bladder_prevoid_volume_cc",
       "bladder_postvoid_volume_cc"
@@ -912,6 +920,12 @@ export function buildUsgReport(params: {
 
   const bladderLine = joinSentences([
     resolveField(overrides, defaults, "bladder_main", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "bladder_wall_thickening",
+      suppressedFields
+    ),
     resolveField(overrides, defaults, "bladder_mass_calculus", suppressedFields)
   ]);
   if (bladderLine) {
@@ -1169,6 +1183,12 @@ export function buildUsgKubReport(params: {
 
   const bladderLine = joinSentences([
     resolveField(overrides, defaults, "bladder_main", suppressedFields),
+    resolveField(
+      overrides,
+      defaults,
+      "bladder_wall_thickening",
+      suppressedFields
+    ),
     resolveField(overrides, defaults, "bladder_mass_calculus", suppressedFields)
   ]);
   if (bladderLine) {
