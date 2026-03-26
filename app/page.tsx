@@ -213,14 +213,33 @@ function HoverHint({
   onMouseEnter?: () => void;
   onFocusCapture?: () => void;
 }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const hasMessage = Boolean(message);
+
+  const handleMouseEnter = () => {
+    if (hasMessage) setIsOpen(true);
+    onMouseEnter?.();
+  };
+
+  const handleFocusCapture = () => {
+    if (hasMessage) setIsOpen(true);
+    onFocusCapture?.();
+  };
+
   return (
     <div
-      className={className}
-      title={message}
-      onMouseEnter={onMouseEnter}
-      onFocusCapture={onFocusCapture}
+      className={`relative ${className}`}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={() => setIsOpen(false)}
+      onFocusCapture={handleFocusCapture}
+      onBlurCapture={() => setIsOpen(false)}
     >
       {children}
+      {hasMessage && isOpen && (
+        <div className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 -translate-x-1/2 rounded-md bg-slate-900 px-2.5 py-1 text-[11px] font-semibold text-white shadow-lg dark:bg-slate-700">
+          {message}
+        </div>
+      )}
     </div>
   );
 }
@@ -3829,15 +3848,14 @@ export default function Home() {
       behavior: "smooth",
       block: "center"
     });
-    setIsTemplateAttentionActive(false);
-    window.requestAnimationFrame(() => setIsTemplateAttentionActive(true));
+    setIsTemplateAttentionActive(true);
     if (templateAttentionTimerRef.current) {
       window.clearTimeout(templateAttentionTimerRef.current);
     }
     templateAttentionTimerRef.current = window.setTimeout(() => {
       setIsTemplateAttentionActive(false);
       templateAttentionTimerRef.current = null;
-    }, 1400);
+    }, 1100);
   };
   const walkthroughOverlay =
     isWalkthroughOpen && walkthroughSteps[walkthroughStepIndex] ? (
@@ -4161,14 +4179,9 @@ export default function Home() {
                         isSelected
                           ? "scale-[1.02] border-primary ring-2 ring-primary/25 shadow-xl shadow-primary/20 dark:border-primary"
                           : shouldBounceTemplateCards
-                            ? "animate-bounce border-primary ring-2 ring-primary/30 shadow-lg shadow-primary/20 dark:border-primary"
+                            ? "border-primary/80 ring-2 ring-primary/25 shadow-lg shadow-primary/10 dark:border-primary"
                             : "border-slate-200 hover:-translate-y-0.5 hover:border-primary dark:border-slate-800"
                       }`}
-                      style={
-                        shouldBounceTemplateCards && !isSelected
-                          ? { animationDelay: `${index * 90}ms` }
-                          : undefined
-                      }
                     >
                       <div
                         className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg transition-transform group-hover:scale-110 ${visual.iconWrap}`}
@@ -4246,14 +4259,9 @@ export default function Home() {
                             isSelected
                               ? "bg-primary/10"
                               : shouldBounceTemplateCards
-                                ? "animate-bounce bg-primary/5"
+                                ? "bg-primary/5 ring-1 ring-primary/20"
                                 : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
                           }`}
-                          style={
-                            shouldBounceTemplateCards && !isSelected
-                              ? { animationDelay: `${index * 90}ms` }
-                              : undefined
-                          }
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <span
