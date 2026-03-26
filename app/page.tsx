@@ -203,14 +203,23 @@ function isKubTemplateId(templateId: string) {
 function HoverHint({
   message,
   className = "",
-  children
+  children,
+  onMouseEnter,
+  onFocusCapture
 }: {
   message?: string;
   className?: string;
   children: React.ReactNode;
+  onMouseEnter?: () => void;
+  onFocusCapture?: () => void;
 }) {
   return (
-    <div className={className} title={message}>
+    <div
+      className={className}
+      title={message}
+      onMouseEnter={onMouseEnter}
+      onFocusCapture={onFocusCapture}
+    >
       {children}
     </div>
   );
@@ -1479,6 +1488,7 @@ export default function Home() {
   const [isWalkthroughOpen, setIsWalkthroughOpen] = useState(false);
   const [walkthroughStepIndex, setWalkthroughStepIndex] = useState(0);
   const [hasResolvedWalkthrough, setHasResolvedWalkthrough] = useState(false);
+  const [isTemplateAttentionActive, setIsTemplateAttentionActive] = useState(false);
 
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -1494,12 +1504,14 @@ export default function Home() {
   const loadedCustomConfigHashRef = useRef("");
   const customTemplateSaveTimerRef = useRef<number | null>(null);
   const worklistSectionRef = useRef<HTMLElement | null>(null);
+  const quickTemplatesSectionRef = useRef<HTMLElement | null>(null);
   const wasSearchModeRef = useRef(false);
   const mobileProfileMenuRef = useRef<HTMLDivElement | null>(null);
   const profileAvatarObjectUrlRef = useRef<string | null>(null);
   const profileImageMenuRef = useRef<HTMLDivElement | null>(null);
   const profileImageUploadInputRef = useRef<HTMLInputElement | null>(null);
   const profileImageCameraInputRef = useRef<HTMLInputElement | null>(null);
+  const templateAttentionTimerRef = useRef<number | null>(null);
 
   const isBackendConfigured = !IS_GITHUB_PAGES || Boolean(API_BASE_URL);
   const selectedTemplate = useMemo(
@@ -1757,6 +1769,9 @@ export default function Home() {
     return () => {
       if (audioUrlRef.current) URL.revokeObjectURL(audioUrlRef.current);
       if (timerRef.current) window.clearInterval(timerRef.current);
+      if (templateAttentionTimerRef.current) {
+        window.clearTimeout(templateAttentionTimerRef.current);
+      }
     };
   }, []);
 
@@ -3799,13 +3814,31 @@ export default function Home() {
     (activeReportStatus === "pending_review" ||
       activeReportStatus === "draft" ||
       (!activeReportStatus && allowRecordingFromReport));
-  const selectTemplateTooltip = "Please select a template.";
+  const noTemplateSelected = !templateId;
+  const selectTemplateTooltip = "Please select a template first.";
   const startNewReportTooltip =
-    !canGoRecording && !templateId ? selectTemplateTooltip : undefined;
+    !canGoRecording && noTemplateSelected ? selectTemplateTooltip : undefined;
   const startRecordingTooltip =
-    !canStartNewFromDashboard && !templateId ? selectTemplateTooltip : undefined;
+    !canStartNewFromDashboard && noTemplateSelected ? selectTemplateTooltip : undefined;
   const reportEditorTooltip =
-    !canResumeReportFromDashboard && !templateId ? selectTemplateTooltip : undefined;
+    !canResumeReportFromDashboard && noTemplateSelected ? selectTemplateTooltip : undefined;
+  const shouldBounceTemplateCards = isTemplateAttentionActive && noTemplateSelected;
+  const triggerTemplateAttention = () => {
+    if (!noTemplateSelected) return;
+    quickTemplatesSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+    setIsTemplateAttentionActive(false);
+    window.requestAnimationFrame(() => setIsTemplateAttentionActive(true));
+    if (templateAttentionTimerRef.current) {
+      window.clearTimeout(templateAttentionTimerRef.current);
+    }
+    templateAttentionTimerRef.current = window.setTimeout(() => {
+      setIsTemplateAttentionActive(false);
+      templateAttentionTimerRef.current = null;
+    }, 1400);
+  };
   const walkthroughOverlay =
     isWalkthroughOpen && walkthroughSteps[walkthroughStepIndex] ? (
       <WalkthroughOverlay
@@ -3883,7 +3916,12 @@ export default function Home() {
               <span className="material-icons-round">dashboard</span>
               {!isSidebarCollapsed && "Dashboard"}
             </button>
-            <HoverHint className="w-full" message={startRecordingTooltip}>
+            <HoverHint
+              className="w-full"
+              message={startRecordingTooltip}
+              onMouseEnter={triggerTemplateAttention}
+              onFocusCapture={triggerTemplateAttention}
+            >
               <button
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
                 onClick={() => canStartNewFromDashboard && startNewReportSession()}
@@ -3893,7 +3931,12 @@ export default function Home() {
                 {!isSidebarCollapsed && "Recording"}
               </button>
             </HoverHint>
-            <HoverHint className="w-full" message={reportEditorTooltip}>
+            <HoverHint
+              className="w-full"
+              message={reportEditorTooltip}
+              onMouseEnter={triggerTemplateAttention}
+              onFocusCapture={triggerTemplateAttention}
+            >
               <button
                 className="flex w-full items-center gap-3 rounded-lg px-3 py-3 text-left font-medium text-slate-500 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50 dark:text-slate-400 dark:hover:bg-slate-800"
                 onClick={() => canResumeReportFromDashboard && setActiveView("report")}
@@ -4040,7 +4083,12 @@ export default function Home() {
                   Select a template card to begin and move from dictation to finalized report in one workspace.
                 </p>
               </div>
-              <HoverHint className="hidden md:flex" message={startNewReportTooltip}>
+              <HoverHint
+                className="hidden md:flex"
+                message={startNewReportTooltip}
+                onMouseEnter={triggerTemplateAttention}
+                onFocusCapture={triggerTemplateAttention}
+              >
                 <button
                   data-tour-id="dashboard-start-report"
                   className="flex items-center gap-3 rounded-xl bg-primary px-6 py-3 font-semibold text-white shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
@@ -4087,7 +4135,7 @@ export default function Home() {
             )}
 
             {!isSearchMode && (
-              <section className="mb-10">
+              <section ref={quickTemplatesSectionRef} className="mb-10">
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-xl font-bold text-slate-900 dark:text-white">Quick Templates</h2>
                 <button
@@ -4112,8 +4160,15 @@ export default function Home() {
                       className={`group rounded-xl border bg-white p-5 text-left shadow-sm transition-all dark:bg-slate-900 ${
                         isSelected
                           ? "scale-[1.02] border-primary ring-2 ring-primary/25 shadow-xl shadow-primary/20 dark:border-primary"
-                          : "border-slate-200 hover:-translate-y-0.5 hover:border-primary dark:border-slate-800"
+                          : shouldBounceTemplateCards
+                            ? "animate-bounce border-primary ring-2 ring-primary/30 shadow-lg shadow-primary/20 dark:border-primary"
+                            : "border-slate-200 hover:-translate-y-0.5 hover:border-primary dark:border-slate-800"
                       }`}
+                      style={
+                        shouldBounceTemplateCards && !isSelected
+                          ? { animationDelay: `${index * 90}ms` }
+                          : undefined
+                      }
                     >
                       <div
                         className={`mb-4 flex h-10 w-10 items-center justify-center rounded-lg transition-transform group-hover:scale-110 ${visual.iconWrap}`}
@@ -4190,8 +4245,15 @@ export default function Home() {
                           className={`flex w-full items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 text-left transition-colors last:border-b-0 dark:border-slate-800 ${
                             isSelected
                               ? "bg-primary/10"
-                              : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                              : shouldBounceTemplateCards
+                                ? "animate-bounce bg-primary/5"
+                                : "hover:bg-slate-50 dark:hover:bg-slate-800/40"
                           }`}
+                          style={
+                            shouldBounceTemplateCards && !isSelected
+                              ? { animationDelay: `${index * 90}ms` }
+                              : undefined
+                          }
                         >
                           <div className="flex min-w-0 items-center gap-3">
                             <span
