@@ -2914,6 +2914,16 @@ export default function Home() {
     void persistWalkthroughSeen(reason);
   };
 
+  const restartWalkthroughFromStart = () => {
+    setIsMobileProfileMenuOpen(false);
+    setIsProfileImageMenuOpen(false);
+    setIsFullscreen(false);
+    setWalkthroughStepIndex(0);
+    setHasResolvedWalkthrough(true);
+    setIsWalkthroughOpen(true);
+    setActiveView("dashboard");
+  };
+
   const goToNextWalkthroughStep = () => {
     if (walkthroughStepIndex >= walkthroughSteps.length - 1) {
       closeWalkthrough("completed");
@@ -3971,6 +3981,13 @@ export default function Home() {
                     <span className="material-icons-round text-sm">person</span>
                     Edit Profile
                   </button>
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+                    onClick={restartWalkthroughFromStart}
+                  >
+                    <span className="material-icons-round text-sm">play_lesson</span>
+                    Restart Walkthrough
+                  </button>
                   {isAdmin && (
                     <button
                       className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs font-semibold text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
@@ -4010,10 +4027,6 @@ export default function Home() {
                 <span className="material-icons-round text-sm">mic</span>
                 {BRAND_NAME} ready
               </div>
-              <button className="relative text-slate-500 transition-colors hover:text-primary">
-                <span className="material-icons-round">notifications</span>
-                <span className="absolute -right-1 -top-1 h-2 w-2 rounded-full bg-red-500" />
-              </button>
             </div>
           </header>
 
@@ -4907,6 +4920,13 @@ export default function Home() {
                   disabled={isSavingProfile}
                 >
                   Cancel
+                </button>
+                <button
+                  className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                  onClick={restartWalkthroughFromStart}
+                  disabled={isSavingProfile}
+                >
+                  Restart Walkthrough
                 </button>
                 <button
                   className="rounded-lg border border-red-200 bg-red-50 px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-100 dark:border-red-900 dark:bg-red-900/20 dark:text-red-400 dark:hover:bg-red-900/30"
