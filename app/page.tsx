@@ -240,6 +240,30 @@ function writeWalkthroughSeenVersion(uid: string, version: number) {
   }
 }
 
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function getVisibleWalkthroughTarget(targetId: string) {
+  if (typeof window === "undefined") return null;
+  const nodes = Array.from(
+    document.querySelectorAll<HTMLElement>(`[data-tour-id="${targetId}"]`)
+  );
+  for (const node of nodes) {
+    const rect = node.getBoundingClientRect();
+    const styles = window.getComputedStyle(node);
+    if (
+      rect.width > 0 &&
+      rect.height > 0 &&
+      styles.display !== "none" &&
+      styles.visibility !== "hidden"
+    ) {
+      return node;
+    }
+  }
+  return null;
+}
+
 function WalkthroughOverlay({
   step,
   stepIndex,
@@ -257,78 +281,222 @@ function WalkthroughOverlay({
 }) {
   const isFirstStep = stepIndex === 0;
   const isLastStep = stepIndex === totalSteps - 1;
+  const [targetRect, setTargetRect] = useState<DOMRect | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const syncTargetRect = () => {
+      const node = getVisibleWalkthroughTarget(step.targetId);
+      setTargetRect(node ? node.getBoundingClientRect() : null);
+    };
+
+    const scrollTargetIntoView = () => {
+      const node = getVisibleWalkthroughTarget(step.targetId);
+      node?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "center"
+      });
+    };
+
+    scrollTargetIntoView();
+    syncTargetRect();
+
+    const timer = window.setInterval(syncTargetRect, 250);
+    window.addEventListener("resize", syncTargetRect);
+    window.addEventListener("scroll", syncTargetRect, true);
+
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("resize", syncTargetRect);
+      window.removeEventListener("scroll", syncTargetRect, true);
+    };
+  }, [step.targetId]);
+
+  const viewportWidth =
+    typeof window === "undefined" ? 1280 : window.innerWidth;
+  const viewportHeight =
+    typeof window === "undefined" ? 720 : window.innerHeight;
+  const tooltipWidth = Math.min(380, Math.max(280, viewportWidth - 24));
+  const spotlightPadding = 10;
+  const spotlightRect = targetRect
+    ? {
+        top: Math.max(12, targetRect.top - spotlightPadding),
+        left: Math.max(12, targetRect.left - spotlightPadding),
+        width: Math.min(
+          targetRect.width + spotlightPadding * 2,
+          viewportWidth - 24
+        ),
+        height: Math.min(
+          targetRect.height + spotlightPadding * 2,
+          viewportHeight - 24
+        )
+      }
+    : null;
+
+  const tooltipStyle: React.CSSProperties = spotlightRect
+    ? (() => {
+        const gap = 18;
+        const width = Math.min(tooltipWidth, viewportWidth - 24);
+        let top = viewportHeight / 2;
+        let left = viewportWidth / 2;
+        let transform = "translate(-50%, -50%)";
+
+        if (step.placement === "top") {
+          top = spotlightRect.top - gap;
+          left = spotlightRect.left + spotlightRect.width / 2;
+          transform = "translate(-50%, -100%)";
+        } else if (step.placement === "left") {
+          top = spotlightRect.top + spotlightRect.height / 2;
+          left = spotlightRect.left - gap;
+          transform = "translate(-100%, -50%)";
+        } else if (step.placement === "right") {
+          top = spotlightRect.top + spotlightRect.height / 2;
+          left = spotlightRect.left + spotlightRect.width + gap;
+          transform = "translate(0, -50%)";
+        } else {
+          top = spotlightRect.top + spotlightRect.height + gap;
+          left = spotlightRect.left + spotlightRect.width / 2;
+          transform = "translate(-50%, 0)";
+        }
+
+        const minLeft = 12;
+        const maxLeft = viewportWidth - width - 12;
+        const anchoredLeft =
+          transform === "translate(0, -50%)"
+            ? clampNumber(left, minLeft, maxLeft)
+            : clampNumber(left - width / 2, minLeft, maxLeft);
+        const anchoredTop = clampNumber(top, 12, viewportHeight - 16);
+
+        return {
+          top: anchoredTop,
+          left:
+            transform === "translate(0, -50%)" ? anchoredLeft : anchoredLeft + width / 2,
+          transform,
+          width
+        };
+      })()
+    : {
+        top: "50%",
+        left: "50%",
+        transform: "translate(-50%, -50%)",
+        width: tooltipWidth
+      };
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/70 p-3 backdrop-blur-sm md:items-center md:p-6">
-      <div className="w-full max-w-2xl overflow-hidden rounded-[2rem] border border-white/10 bg-white shadow-2xl dark:bg-slate-900">
-        <div className="bg-gradient-to-r from-primary via-sky-500 to-emerald-400 px-6 py-5 text-white">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/75">
-                Product Walkthrough
-              </p>
-              <h2 className="mt-2 text-2xl font-bold">{step.title}</h2>
-            </div>
-            <button
-              type="button"
-              className="rounded-full border border-white/20 px-3 py-1 text-xs font-semibold text-white transition hover:bg-white/10"
-              onClick={onSkip}
-            >
-              Skip Tour
-            </button>
+    <div className="fixed inset-0 z-[90]">
+      {spotlightRect ? (
+        <>
+          <div
+            className="fixed inset-x-0 top-0 bg-slate-950/72 backdrop-blur-[3px]"
+            style={{ height: spotlightRect.top }}
+          />
+          <div
+            className="fixed bg-slate-950/72 backdrop-blur-[3px]"
+            style={{
+              top: spotlightRect.top,
+              left: 0,
+              width: spotlightRect.left,
+              height: spotlightRect.height
+            }}
+          />
+          <div
+            className="fixed bg-slate-950/72 backdrop-blur-[3px]"
+            style={{
+              top: spotlightRect.top,
+              left: spotlightRect.left + spotlightRect.width,
+              right: 0,
+              height: spotlightRect.height
+            }}
+          />
+          <div
+            className="fixed inset-x-0 bottom-0 bg-slate-950/72 backdrop-blur-[3px]"
+            style={{
+              top: spotlightRect.top + spotlightRect.height
+            }}
+          />
+          <button
+            type="button"
+            aria-label={`Continue walkthrough from ${step.label}`}
+            className="fixed z-[91] rounded-[1.75rem] border-2 border-white/90 bg-white/5 shadow-[0_0_0_1px_rgba(255,255,255,0.35)] transition"
+            style={{
+              top: spotlightRect.top,
+              left: spotlightRect.left,
+              width: spotlightRect.width,
+              height: spotlightRect.height,
+              boxShadow: "0 0 0 6px rgba(56, 189, 248, 0.22)"
+            }}
+            onClick={onNext}
+          >
+            <span className="pointer-events-none absolute inset-0 rounded-[inherit] ring-1 ring-white/30" />
+            <span className="pointer-events-none absolute -top-3 right-4 rounded-full bg-white px-3 py-1 text-[10px] font-bold uppercase tracking-[0.22em] text-slate-700 shadow-sm">
+              Tap Here
+            </span>
+          </button>
+        </>
+      ) : (
+        <div className="fixed inset-0 bg-slate-950/72 backdrop-blur-[3px]" />
+      )}
+
+      <div
+        className="fixed z-[92] rounded-[1.75rem] border border-white/10 bg-white/96 p-5 shadow-2xl dark:bg-slate-900/96"
+        style={tooltipStyle}
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.26em] text-primary">
+              {step.label}
+            </p>
+            <h2 className="mt-2 text-xl font-bold text-slate-900 dark:text-slate-100">
+              {step.title}
+            </h2>
           </div>
-          <div className="mt-4 flex items-center justify-between gap-4 text-xs font-semibold uppercase tracking-wide text-white/80">
-            <span>{step.label}</span>
-            <span>{`Step ${stepIndex + 1} of ${totalSteps}`}</span>
-          </div>
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            onClick={onSkip}
+          >
+            Skip
+          </button>
         </div>
 
-        <div className="px-6 py-6">
-          <p className="text-base leading-7 text-slate-600 dark:text-slate-300">
-            {step.description}
-          </p>
-          <div className="mt-5 space-y-3">
-            {step.bullets.map((item) => (
-              <div
-                key={`${step.id}-${item}`}
-                className="flex items-start gap-3 rounded-2xl bg-slate-50 px-4 py-3 dark:bg-slate-800/80"
-              >
-                <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-                  <span className="material-icons-round text-sm">check</span>
-                </span>
-                <p className="text-sm leading-6 text-slate-700 dark:text-slate-200">{item}</p>
-              </div>
-            ))}
-          </div>
+        <p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">
+          {step.description}
+        </p>
+        <p className="mt-3 text-xs font-semibold uppercase tracking-wide text-slate-400">
+          {spotlightRect
+            ? "Click the highlighted area or use Continue."
+            : "Loading the highlighted control..."}
+        </p>
 
-          <div className="mt-6 flex items-center gap-2">
-            {Array.from({ length: totalSteps }).map((_, index) => (
-              <span
-                key={`${step.id}-dot-${index}`}
-                className={`h-2.5 rounded-full transition-all ${
-                  index === stepIndex ? "w-8 bg-primary" : "w-2.5 bg-slate-200 dark:bg-slate-700"
-                }`}
-              />
-            ))}
-          </div>
+        <div className="mt-5 flex items-center gap-2">
+          {Array.from({ length: totalSteps }).map((_, index) => (
+            <span
+              key={`${step.id}-dot-${index}`}
+              className={`h-2.5 rounded-full transition-all ${
+                index === stepIndex ? "w-8 bg-primary" : "w-2.5 bg-slate-200 dark:bg-slate-700"
+              }`}
+            />
+          ))}
+        </div>
 
-          <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
-            <button
-              type="button"
-              className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
-              onClick={onBack}
-              disabled={isFirstStep}
-            >
-              Back
-            </button>
-            <button
-              type="button"
-              className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
-              onClick={onNext}
-            >
-              {isLastStep ? "Finish Tour" : "Next Page"}
-            </button>
-          </div>
+        <div className="mt-5 flex items-center justify-between gap-3">
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+            onClick={onBack}
+            disabled={isFirstStep}
+          >
+            Back
+          </button>
+          <button
+            type="button"
+            className="rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary/20 transition hover:bg-primary/90"
+            onClick={onNext}
+          >
+            {isLastStep ? "Finish Tour" : step.actionLabel || "Continue"}
+          </button>
         </div>
       </div>
     </div>
@@ -937,10 +1105,12 @@ type IssueSummaryPayload = {
 type WalkthroughStep = {
   id: string;
   view: AppView;
+  targetId: string;
   label: string;
   title: string;
   description: string;
-  bullets: string[];
+  placement?: "top" | "bottom" | "left" | "right";
+  actionLabel?: string;
 };
 
 type DiffOpKind = "equal" | "remove" | "add";
@@ -1448,6 +1618,7 @@ export default function Home() {
         templates.findIndex((item) => item.id === b.id);
     });
   }, [recentTemplateIds]);
+  const walkthroughDefaultTemplateId = quickTemplates[0]?.id || templates[0]?.id || "";
   const activeReport = useMemo(
     () => reports.find((item) => item.id === activeReportId) || null,
     [reports, activeReportId]
@@ -1486,72 +1657,73 @@ export default function Home() {
   const walkthroughSteps = useMemo(() => {
     const steps: WalkthroughStep[] = [
       {
-        id: "dashboard",
+        id: "dashboard-template",
         view: "dashboard",
+        targetId: "dashboard-template-card",
         label: "Dashboard",
-        title: "Dashboard and Template Setup",
+        title: "Choose a Template First",
         description:
-          "This is the main workspace landing page. Start here by picking a study template, checking the live worklist, and opening a fresh report session.",
-        bullets: [
-          "Choose a template card first. Template selection unlocks recording and report creation.",
-          "Use Start New Report to jump into dictation once a template is selected.",
-          "The worklist below keeps draft, pending, and completed reports together."
-        ]
+          "Start here. These template cards define the report structure and unlock the rest of the workflow.",
+        placement: "bottom",
+        actionLabel: "Next"
       },
       {
-        id: "recording",
+        id: "dashboard-start-report",
+        view: "dashboard",
+        targetId: "dashboard-start-report",
+        label: "Dashboard",
+        title: "Open a New Report Session",
+        description:
+          "Once a template is selected, this is the main entry point into the recording workflow.",
+        placement: "left",
+        actionLabel: "Go To Recording"
+      },
+      {
+        id: "recording-control",
         view: "recording",
+        targetId: "recording-primary-control",
         label: "Recording",
-        title: "Capture or Upload Dictation",
+        title: "Start Dictation Here",
         description:
-          "The recording page is where audio enters the system. Dictate live, upload saved audio, and track topic coverage before generating the draft.",
-        bullets: [
-          "Use the main recording control to start, pause, resume, or stop dictation.",
-          "Upload works as a fallback if audio was recorded elsewhere.",
-          "The template checklist on the side shows which sections are being covered."
-        ]
+          "This is the primary recording control. Use it to start, pause, resume, and continue the dictation flow.",
+        placement: "top",
+        actionLabel: "Go To Report"
       },
       {
-        id: "report",
+        id: "report-editor",
         view: "report",
+        targetId: "report-editor-surface",
         label: "Report Editor",
-        title: "Review and Finalize the Draft",
+        title: "Review the Draft in the Editor",
         description:
-          "The editor is the review surface for AI output. Update wording, polish formatting, export files, and move the report through draft or final status.",
-        bullets: [
-          "Edit the generated report directly in the main editor.",
-          "Use export, formatting, and re-record tools without leaving the case workflow.",
-          "Save as draft or finalize once the report is ready for sign-off."
-        ]
+          "The generated findings appear here. This is where you edit, polish, export, and finalize the report.",
+        placement: "right",
+        actionLabel: "Go To Profile"
       },
       {
-        id: "profile",
+        id: "profile-save",
         view: "profile",
+        targetId: "profile-save-button",
         label: "Profile",
-        title: "Keep Your Profile Updated",
+        title: "Save Profile Updates From Here",
         description:
-          "Profile settings let each doctor keep their name and image current so saved work and ownership metadata stay clean across the app.",
-        bullets: [
-          "Update your display name to keep report ownership readable.",
-          "Upload or capture a profile photo from the same page.",
-          "Changes save back to your account profile and appear across the workspace."
-        ]
+          "Use this control after updating your name or profile image so your account details stay consistent across saved reports.",
+        placement: "top",
+        actionLabel: isAdmin ? "Go To Admin" : "Finish Tour"
       }
     ];
 
     if (isAdmin) {
       steps.push({
-        id: "admin",
+        id: "admin-issues",
         view: "admin",
+        targetId: "admin-issues-panel",
         label: "Admin",
-        title: "Review Edits in Admin Issues",
+        title: "Review Doctor Edits Here",
         description:
-          "Admin Issues is the quality control page for review leads. It shows report edits, highlights differences, and summarizes model gaps for follow-up.",
-        bullets: [
-          "Open any reported issue to compare the AI draft with the final doctor-edited version.",
-          "Use the summary panel to spot repeat quality problems quickly.",
-          "This page only appears for admin accounts."
-        ]
+          "This panel lists edited reports so admins can compare AI output with the final doctor-reviewed report.",
+        placement: "right",
+        actionLabel: "Finish Tour"
       });
     }
 
@@ -1741,6 +1913,21 @@ export default function Home() {
       setActiveView(activeStep.view);
     }
   }, [activeView, isWalkthroughOpen, walkthroughStepIndex, walkthroughSteps]);
+
+  useEffect(() => {
+    if (!isWalkthroughOpen) return;
+    const activeStep = walkthroughSteps[walkthroughStepIndex];
+    if (!activeStep) return;
+    if (activeStep.id === "dashboard-start-report" && !templateId && walkthroughDefaultTemplateId) {
+      handleSelectTemplate(walkthroughDefaultTemplateId);
+    }
+  }, [
+    isWalkthroughOpen,
+    walkthroughDefaultTemplateId,
+    walkthroughStepIndex,
+    walkthroughSteps,
+    templateId
+  ]);
 
   useEffect(() => {
     if (!firebaseClient) {
@@ -3842,6 +4029,7 @@ export default function Home() {
               </div>
               <HoverHint className="hidden md:flex" message={startNewReportTooltip}>
                 <button
+                  data-tour-id="dashboard-start-report"
                   className="flex items-center gap-3 rounded-xl bg-primary px-6 py-3 font-semibold text-white shadow-lg shadow-primary/20 transition-all active:scale-95 disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={!canGoRecording}
                   onClick={startNewReportSession}
@@ -3906,6 +4094,7 @@ export default function Home() {
                   return (
                     <button
                       key={template.id}
+                      data-tour-id={index === 0 ? "dashboard-template-card" : undefined}
                       onClick={() => handleSelectTemplate(template.id)}
                       className={`group rounded-xl border bg-white p-5 text-left shadow-sm transition-all dark:bg-slate-900 ${
                         isSelected
@@ -4477,6 +4666,7 @@ export default function Home() {
             style={{ bottom: "max(1.25rem, env(safe-area-inset-bottom))" }}
           >
             <button
+              data-tour-id="dashboard-start-report"
               className="flex items-center justify-center gap-2 rounded-full bg-primary px-5 py-3 text-sm font-semibold text-white shadow-xl shadow-primary/30 transition-all active:scale-95"
               onClick={startNewReportSession}
             >
@@ -4701,6 +4891,7 @@ export default function Home() {
 
               <div className="mt-6 flex flex-wrap items-center gap-2">
                 <button
+                  data-tour-id="profile-save-button"
                   className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white shadow-md shadow-primary/20 hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
                   onClick={handleSaveProfile}
                   disabled={isSavingProfile}
@@ -4856,7 +5047,10 @@ export default function Home() {
 
           <div className="flex min-h-0 flex-1 overflow-hidden p-3 md:p-6">
             <div className="grid min-h-0 w-full flex-1 gap-4 xl:grid-cols-[360px,minmax(0,1fr)]">
-              <section className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900">
+              <section
+                data-tour-id="admin-issues-panel"
+                className="flex min-h-0 flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900"
+              >
                 <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
                   <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                     Edited Reports
@@ -5292,6 +5486,7 @@ export default function Home() {
 
             <div className="absolute bottom-6 left-1/2 hidden -translate-x-1/2 flex-wrap items-center gap-3 rounded-full border border-slate-200 bg-white p-3 shadow-2xl shadow-slate-300/40 dark:border-slate-700 dark:bg-slate-800 dark:shadow-none md:flex">
               <button
+                data-tour-id="recording-primary-control"
                 className={`flex h-14 items-center justify-center rounded-full font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
                   showStopAndProcess
                     ? "w-14 bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
@@ -5449,6 +5644,7 @@ export default function Home() {
                 }`}
               >
                 <button
+                  data-tour-id="recording-primary-control"
                   className={`flex h-12 items-center justify-center rounded-xl font-bold transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
                     showStopAndProcess
                       ? "w-12 rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 dark:bg-slate-700 dark:text-slate-300"
@@ -5734,7 +5930,10 @@ export default function Home() {
               </div>
             )}
 
-            <div className="flex min-h-[56vh] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:min-h-0 md:flex-1 dark:border-slate-800 dark:bg-slate-900">
+            <div
+              data-tour-id="report-editor-surface"
+              className="flex min-h-[56vh] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm md:min-h-0 md:flex-1 dark:border-slate-800 dark:bg-slate-900"
+            >
               <div className="flex flex-col gap-2 border-b border-slate-200 bg-slate-50/50 px-4 py-2 dark:border-slate-800 dark:bg-slate-800/50 sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex min-w-0 items-center gap-1 overflow-x-auto pb-1 sm:pb-0 [&>*]:shrink-0">
                   <button
