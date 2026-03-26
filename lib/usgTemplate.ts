@@ -153,6 +153,7 @@ const USG_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
 
 const USG_KUB_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_MALE,
+  bladder_main: "Well distended",
   bladder_wall_thickening: "No abnormal wall thickening seen.",
   bladder_mass_calculus: "No internal echoes, mass, or calculus seen.",
   impression: "No significant abnormality seen in KUB study",
@@ -161,6 +162,7 @@ const USG_KUB_DEFAULT_FIELDS_MALE: Required<UsgFieldOverrides> = {
 
 const USG_KUB_DEFAULT_FIELDS_FEMALE: Required<UsgFieldOverrides> = {
   ...USG_DEFAULT_FIELDS_FEMALE,
+  bladder_main: "Well distended",
   bladder_wall_thickening: "No abnormal wall thickening seen.",
   bladder_mass_calculus: "No internal echoes, mass, or calculus seen.",
   impression: "No significant abnormality seen in KUB study",
